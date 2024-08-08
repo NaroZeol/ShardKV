@@ -37,7 +37,24 @@ type GetWorkerInfoArgs struct {
 
 type GetWorkerInfoReply struct {
 	State workerState
-	Job   string
+	Work  string
+}
+
+type WorkFinishArgs struct {
+	CallerId int
+	WorkId   int
+	WorkType string
+}
+
+type WorkFinishReply struct {
+}
+
+type GetNReduceArgs struct {
+	CallerId int
+}
+
+type GetNReduceReply struct {
+	NReduce int
 }
 
 // Cook up a unique-ish UNIX-domain socket name

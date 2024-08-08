@@ -1,11 +1,14 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"log"
 	"net/rpc"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -14,6 +17,15 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+type WorkerMeta struct {
+	mapf    func(string, string) []KeyValue
+	reducef func(string, []string) string
+	nReduce int
+	id      int
+}
+
+var workMetaMsg WorkerMeta
 
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -27,8 +39,12 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
-
+	workMetaMsg = WorkerMeta{
+		mapf:    mapf,
+		reducef: reducef,
+		nReduce: CallGetNReduce(),
+		id:      os.Getpid(),
+	}
 	CallRegisterWorker()
 
 	for {
@@ -41,9 +57,9 @@ func Worker(mapf func(string, string) []KeyValue,
 			log.Println("Free now")
 			continue
 		} else if workerInfo.State == Ready {
-			err := do_it(workerInfo.Job)
+			err := do_it(workerInfo.Work)
 			if err != nil {
-				log.Println("Error when doing job")
+				log.Println("Error when doing job: ", err.Error())
 			}
 		}
 	}
@@ -53,15 +69,79 @@ func Worker(mapf func(string, string) []KeyValue,
 
 }
 
-func do_it(job string) error {
-	log.Println("Get job: ", job)
+func do_it(work string) error {
+
+	workArgs := strings.Split(work, " ")
+
+	workType := workArgs[0]                // "Map" or "Reduce"
+	workId, _ := strconv.Atoi(workArgs[1]) // Id of map or reduce
+	workArg := workArgs[2]                 // "Map": key of mapf. "Reduce": nReduce of reducef.
+
+	log.Println("Get job: ", workType, workId, workArg)
+
+	if workType == "Map" {
+		err := do_mapf(workId, workArg)
+		if err != nil {
+			return err
+		}
+	} else {
+		err := do_reducef(workId, workArg)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Report finish
+	CallWorkFinish(workId, workType)
+
+	return nil
+}
+
+func do_mapf(workId int, workArg string) error {
+	path := "../main/" + workArg
+	content, err := os.ReadFile(path)
+	if err != nil {
+		panic(err)
+	}
+	log.Printf("Reading from %v successful\n", path)
+
+	mrKVs := workMetaMsg.mapf(path, string(content))
+	log.Printf("Map %v done!\n", workId)
+
+	nReduce := workMetaMsg.nReduce
+	for i := 0; i < nReduce; i++ {
+		// mr-MapNumber-ReduceNumber
+		intermediatePath := "mr-" + strconv.Itoa(workId) + "-" + strconv.Itoa(i)
+
+		// TODO: atomic write
+		file, err := os.OpenFile(intermediatePath, os.O_CREATE|os.O_TRUNC|os.O_RDWR,
+			os.ModeAppend|os.ModePerm)
+		if err != nil {
+			return err
+		}
+
+		enc := json.NewEncoder(file)
+		for _, kv := range mrKVs {
+			if ihash(kv.Key)%nReduce == i {
+				err := enc.Encode(&kv)
+				if err != nil {
+					return nil
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func do_reducef(workId int, workArg string) error {
 	return nil
 }
 
 func CallRegisterWorker() {
 	args := RegisterWorkerArgs{}
 
-	args.CallerId = os.Getpid()
+	args.CallerId = workMetaMsg.id
 
 	reply := RegisterWorkerReply{}
 
@@ -76,7 +156,7 @@ func CallRegisterWorker() {
 func CallGetWorkerInfo() *GetWorkerInfoReply {
 	args := GetWorkerInfoArgs{}
 
-	args.CallerId = os.Getpid()
+	args.CallerId = workMetaMsg.id
 
 	reply := GetWorkerInfoReply{}
 
@@ -88,6 +168,34 @@ func CallGetWorkerInfo() *GetWorkerInfoReply {
 		log.Println("Unable to get worker info")
 		return nil
 	}
+}
+
+func CallWorkFinish(workId int, workType string) {
+	args := WorkFinishArgs{}
+
+	args.CallerId = workMetaMsg.id
+	args.WorkId = workId
+	args.WorkType = workType
+
+	reply := WorkFinishReply{}
+
+	ok := call("Coordinator.WorkFinish", &args, &reply)
+	if ok {
+		log.Println("Send finish message to coordinator: ", args)
+	} else {
+		log.Println("Failed to send finish message to coordinator: ", args)
+	}
+}
+
+func CallGetNReduce() int {
+	// TODO: A more gentle way to get coordinator meta message
+	args := GetNReduceArgs{}
+
+	reply := GetNReduceReply{}
+
+	call("Coordinator.GetNReduce", &args, &reply)
+
+	return reply.NReduce
 }
 
 // example function to show how to make an RPC call to the coordinator.
