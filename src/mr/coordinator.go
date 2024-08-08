@@ -1,17 +1,53 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
+import (
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+	"sync"
+)
+
+type worker struct {
+	state workerState
+	job   string
+}
 
 type Coordinator struct {
-	// Your definitions here.
-
+	workerMap     map[int]worker
+	workerMapLock sync.RWMutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
+
+// register a worker
+//
+// the RPC argument and reply types are defined in rpc.go.
+func (c *Coordinator) RegisterWorker(args *RegisterWorkerArgs, reply *RegisterWorkerReply) error {
+	c.workerMapLock.Lock() // Writer lock
+	c.workerMap[args.CallerId] = worker{
+		state: Free,
+		job:   "No job",
+	}
+	c.workerMapLock.Unlock()
+
+	log.Printf("Worker %v register suceessfully\n", args.CallerId)
+
+	return nil
+}
+
+// get worker info
+func (c *Coordinator) GetWorkerInfo(args *GetWorkerInfoArgs, reply *GetWorkerInfoReply) error {
+	c.workerMapLock.RLock() // Reader lock
+	info := c.workerMap[args.CallerId]
+	c.workerMapLock.RUnlock()
+
+	reply.Job = info.job
+	reply.State = info.state
+
+	return nil
+}
 
 // an example RPC handler.
 //
@@ -49,7 +85,10 @@ func (c *Coordinator) Done() bool {
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
+	c := Coordinator{
+		workerMap:     map[int]worker{},
+		workerMapLock: sync.RWMutex{},
+	}
 
 	// Your code here.
 

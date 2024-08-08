@@ -1,9 +1,13 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
+import (
+	"fmt"
+	"hash/fnv"
+	"log"
+	"net/rpc"
+	"os"
+	"time"
+)
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -25,9 +29,65 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// Your worker implementation here.
 
+	CallRegisterWorker()
+
+	for {
+		time.Sleep(3 * time.Second)
+		workerInfo := CallGetWorkerInfo()
+		if workerInfo == nil {
+			log.Fatal("Something wrong when getting worker info")
+		}
+		if workerInfo.State == Free {
+			log.Println("Free now")
+			continue
+		} else if workerInfo.State == Ready {
+			err := do_it(workerInfo.Job)
+			if err != nil {
+				log.Println("Error when doing job")
+			}
+		}
+	}
+
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
+}
+
+func do_it(job string) error {
+	log.Println("Get job: ", job)
+	return nil
+}
+
+func CallRegisterWorker() {
+	args := RegisterWorkerArgs{}
+
+	args.CallerId = os.Getpid()
+
+	reply := RegisterWorkerReply{}
+
+	ok := call("Coordinator.RegisterWorker", &args, &reply)
+	if ok {
+		log.Printf("Worker %v register successfully\n", os.Getpid())
+	} else {
+		log.Fatalf("Worker %v register failed\n", os.Getpid())
+	}
+}
+
+func CallGetWorkerInfo() *GetWorkerInfoReply {
+	args := GetWorkerInfoArgs{}
+
+	args.CallerId = os.Getpid()
+
+	reply := GetWorkerInfoReply{}
+
+	ok := call("Coordinator.GetWorkerInfo", &args, &reply)
+	if ok {
+		log.Println("Get worker info: ", reply)
+		return &reply
+	} else {
+		log.Println("Unable to get worker info")
+		return nil
+	}
 }
 
 // example function to show how to make an RPC call to the coordinator.
