@@ -17,11 +17,11 @@ type worker struct {
 }
 
 type Coordinator struct {
-	workerMap       map[int]worker
-	workerMapLock   sync.RWMutex
-	mapWorkInfo     []int // currently: -1->done 0->ready or id of worker
-	mapWorkInfoLock sync.RWMutex
-	nReduce         int
+	workerMap     map[int]worker
+	workerMapLock sync.RWMutex
+	workInfo      []int // currently: -1->done 0->ready or id of worker
+	workInfoLock  sync.RWMutex
+	nReduce       int
 }
 
 // register a worker
@@ -59,7 +59,7 @@ func (c *Coordinator) GetNReduce(args *GetNReduceArgs, reply *GetNReduceReply) e
 
 // report a work has been finished
 func (c *Coordinator) WorkFinish(args *WorkFinishArgs, reply *WorkFinishReply) error {
-	if args.WorkType == "Map" {
+	if args.WorkType == "Map" || args.WorkType == "Reduce" {
 		c.workerMapLock.Lock()
 		c.workerMap[args.CallerId] = worker{
 			state: Free,
@@ -67,9 +67,9 @@ func (c *Coordinator) WorkFinish(args *WorkFinishArgs, reply *WorkFinishReply) e
 		}
 		c.workerMapLock.Unlock()
 
-		c.mapWorkInfoLock.Lock()
-		c.mapWorkInfo[args.WorkId] = -1 // -1 as completed
-		c.mapWorkInfoLock.Unlock()
+		c.workInfoLock.Lock()
+		c.workInfo[args.WorkId] = -1 // -1 as completed
+		c.workInfoLock.Unlock()
 
 		log.Print("WorkerFinish is called with ", *args)
 	} else if args.WorkType == "Reduce" {
@@ -80,12 +80,22 @@ func (c *Coordinator) WorkFinish(args *WorkFinishArgs, reply *WorkFinishReply) e
 }
 
 func (c *Coordinator) run(files []string, nReduce int) {
+	c.workInfoLock = sync.RWMutex{}
+	nMap := len(files)
+
 	// Map phase
 	log.Println("Map phase start")
-	nMap := len(files)
-	c.mapWorkInfo = make([]int, nMap)
-	c.mapWorkInfoLock = sync.RWMutex{}
+	c.workInfo = make([]int, len(files))
+	c.AllocWork(files, nMap, "Map")
+	log.Println("Map phase done")
 
+	log.Println("Reduce phase start")
+	c.workInfo = make([]int, nReduce)
+	c.AllocWork(files, nReduce, "Reduce")
+	log.Println("Reduce phase done")
+}
+
+func (c *Coordinator) AllocWork(files []string, size int, workType string) {
 	getFreeWorker := func() int {
 		c.workerMapLock.RLock()
 		defer c.workerMapLock.RUnlock()
@@ -99,18 +109,27 @@ func (c *Coordinator) run(files []string, nReduce int) {
 
 	for {
 		readyWork := -1
-		c.mapWorkInfoLock.Lock()
-		for i := 0; i < nMap; i++ {
+		isWorking := false
+		c.workInfoLock.Lock()
+		for i := 0; i < size; i++ {
 			// find a ready work
-			if c.mapWorkInfo[i] == 0 {
+			if c.workInfo[i] == 0 {
 				readyWork = i
 				break
+			} else if c.workInfo[i] != -1 {
+				isWorking = true
 			}
 		}
-		c.mapWorkInfoLock.Unlock()
+		c.workInfoLock.Unlock()
 
 		if readyWork == -1 {
-			break
+			if isWorking {
+				log.Println("Waiting all works to be finished")
+				time.Sleep(1 * time.Second)
+				continue
+			} else {
+				break
+			}
 		}
 
 		workerId := getFreeWorker()
@@ -119,26 +138,27 @@ func (c *Coordinator) run(files []string, nReduce int) {
 			continue
 		}
 
-		c.mapWorkInfoLock.Lock()
-		c.mapWorkInfo[readyWork] = workerId
-		c.mapWorkInfoLock.Unlock()
+		c.workInfoLock.Lock()
+		c.workInfo[readyWork] = workerId
+		c.workInfoLock.Unlock()
 
 		c.workerMapLock.Lock()
-		newJob := "Map" + " " + strconv.Itoa(readyWork) + " " + files[readyWork]
+		var newJob string
+		if workType == "Map" {
+			newJob = "Map" + " " + strconv.Itoa(readyWork) + " " + files[readyWork]
+		} else if workType == "Reduce" {
+			newJob = "Reduce" + " " + strconv.Itoa(readyWork) + " " + strconv.Itoa(readyWork)
+		}
 		c.workerMap[workerId] = worker{
 			state: Ready,
 			work:  newJob,
 		}
 		c.workerMapLock.Unlock()
 
-		log.Printf("Worker %v get job %v\n", workerId, newJob)
+		log.Printf("Worker %v get work: %v\n", workerId, newJob)
 
 		// TODO: Timer for timeout
 	}
-
-	log.Println("Map phase done")
-
-	// TODO: Reduce phase
 }
 
 // an example RPC handler.

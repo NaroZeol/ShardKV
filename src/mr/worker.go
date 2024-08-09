@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +26,14 @@ type WorkerMeta struct {
 	nReduce int
 	id      int
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 var workMetaMsg WorkerMeta
 
@@ -85,7 +95,7 @@ func do_it(work string) error {
 			return err
 		}
 	} else {
-		err := do_reducef(workId, workArg)
+		err := do_reducef(workId)
 		if err != nil {
 			return err
 		}
@@ -98,7 +108,7 @@ func do_it(work string) error {
 }
 
 func do_mapf(workId int, workArg string) error {
-	path := "../main/" + workArg
+	path := workArg
 	content, err := os.ReadFile(path)
 	if err != nil {
 		panic(err)
@@ -106,6 +116,7 @@ func do_mapf(workId int, workArg string) error {
 	log.Printf("Reading from %v successful\n", path)
 
 	mrKVs := workMetaMsg.mapf(path, string(content))
+	sort.Sort(ByKey(mrKVs))
 	log.Printf("Map %v done!\n", workId)
 
 	nReduce := workMetaMsg.nReduce
@@ -134,7 +145,67 @@ func do_mapf(workId int, workArg string) error {
 	return nil
 }
 
-func do_reducef(workId int, workArg string) error {
+func do_reducef(workId int) error {
+	dir, err := os.Open(".")
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	files, err := dir.Readdir(-1)
+	if err != nil {
+		return nil
+	}
+
+	regexPattern := fmt.Sprintf(`^mr-(\d+)-%v$`, workId)
+	regex, err := regexp.Compile(regexPattern)
+	if err != nil {
+		return nil
+	}
+
+	kva := make([]KeyValue, 0)
+
+	for _, file := range files {
+		if regex.MatchString(file.Name()) {
+			intermediateFile, err := os.Open(file.Name())
+			if err != nil {
+				return nil
+			}
+			defer intermediateFile.Close()
+			log.Println("Reading from: ", file.Name())
+
+			dec := json.NewDecoder(intermediateFile)
+			for {
+				var kv KeyValue
+				if err := dec.Decode(&kv); err != nil {
+					break
+				}
+				kva = append(kva, kv)
+			}
+		}
+	}
+
+	sort.Sort(ByKey(kva))
+
+	oPath := "mr-" + strconv.Itoa(workId)
+	ofile, _ := os.Create(oPath)
+
+	i := 0
+	for i < len(kva) {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := workMetaMsg.reducef(kva[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+
+		i = j
+	}
 	return nil
 }
 
