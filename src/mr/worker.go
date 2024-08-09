@@ -63,20 +63,21 @@ func Worker(mapf func(string, string) []KeyValue,
 		if workerInfo == nil {
 			log.Fatal("Something wrong when getting worker info")
 		}
-		if workerInfo.State == Free {
+		if workerInfo.State == WS_Free {
 			log.Println("Free now")
 			continue
-		} else if workerInfo.State == Ready {
+		} else if workerInfo.State == WS_Ready {
 			err := do_it(workerInfo.Work)
 			if err != nil {
 				log.Println("Error when doing job: ", err.Error())
 			}
+		} else if workerInfo.State == WS_Exiting {
+			log.Println("Receive coordinator exiting")
+			CallWorkerDeath()
+			log.Println("Report death")
+			os.Exit(0)
 		}
 	}
-
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
 }
 
 func do_it(work string) error {
@@ -186,7 +187,7 @@ func do_reducef(workId int) error {
 
 	sort.Sort(ByKey(kva))
 
-	oPath := "mr-" + strconv.Itoa(workId)
+	oPath := "mr-out-" + strconv.Itoa(workId)
 	ofile, _ := os.Create(oPath)
 
 	i := 0
@@ -255,6 +256,21 @@ func CallWorkFinish(workId int, workType string) {
 		log.Println("Send finish message to coordinator: ", args)
 	} else {
 		log.Println("Failed to send finish message to coordinator: ", args)
+	}
+}
+
+func CallWorkerDeath() {
+	args := WorkerDeathArgs{
+		CallId: workMetaMsg.id,
+	}
+
+	reply := WorkerDeathReply{}
+
+	ok := call("Coordinator.WorkerDeath", &args, &reply)
+	if ok {
+		log.Print("Send death signal to coordinator")
+	} else {
+		log.Fatal("Error to send death signal to coordinato")
 	}
 }
 

@@ -3,8 +3,9 @@ package mr
 type workerState uint32
 
 const (
-	Free    workerState = 0
-	Ready   workerState = 1
-	Working workerState = 2
-	Death   workerState = 3
+	WS_Free    workerState = 0
+	WS_Ready   workerState = 1
+	WS_Working workerState = 2
+	WS_Death   workerState = 3
+	WS_Exiting workerState = 4
 )

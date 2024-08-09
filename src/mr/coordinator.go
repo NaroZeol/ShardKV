@@ -21,14 +21,23 @@ type Coordinator struct {
 	workerMapLock sync.RWMutex
 	workInfo      []int // currently: -1->done 0->ready or id of worker
 	workInfoLock  sync.RWMutex
+	state         string // Working, Starting, Exiting, Death
+	stateLock     sync.Mutex
 	nReduce       int
 }
 
 // register a worker
 func (c *Coordinator) RegisterWorker(args *RegisterWorkerArgs, reply *RegisterWorkerReply) error {
+	c.stateLock.Lock()
+	defer c.stateLock.Unlock()
+
+	if c.state != "Working" {
+		return rpc.ServerError("RPC server is not working!")
+	}
+
 	c.workerMapLock.Lock() // Writer lock
 	c.workerMap[args.CallerId] = worker{
-		state: Free,
+		state: WS_Free,
 		work:  "No job",
 	}
 	c.workerMapLock.Unlock()
@@ -62,7 +71,7 @@ func (c *Coordinator) WorkFinish(args *WorkFinishArgs, reply *WorkFinishReply) e
 	if args.WorkType == "Map" || args.WorkType == "Reduce" {
 		c.workerMapLock.Lock()
 		c.workerMap[args.CallerId] = worker{
-			state: Free,
+			state: WS_Free,
 			work:  "",
 		}
 		c.workerMapLock.Unlock()
@@ -79,9 +88,27 @@ func (c *Coordinator) WorkFinish(args *WorkFinishArgs, reply *WorkFinishReply) e
 	return nil
 }
 
+// Worker Death
+func (c *Coordinator) WorkerDeath(args *WorkerDeathArgs, reply *WorkerDeathReply) error {
+	c.workerMapLock.Lock()
+	defer c.workerMapLock.Unlock()
+
+	c.workerMap[args.CallId] = worker{
+		state: WS_Death,
+		work:  "None",
+	}
+
+	return nil
+}
+
 func (c *Coordinator) run(files []string, nReduce int) {
 	c.workInfoLock = sync.RWMutex{}
+	c.stateLock = sync.Mutex{}
 	nMap := len(files)
+
+	c.stateLock.Lock()
+	c.state = "Working"
+	c.stateLock.Unlock()
 
 	// Map phase
 	log.Println("Map phase start")
@@ -89,10 +116,19 @@ func (c *Coordinator) run(files []string, nReduce int) {
 	c.AllocWork(files, nMap, "Map")
 	log.Println("Map phase done")
 
+	// Reduce phase
 	log.Println("Reduce phase start")
 	c.workInfo = make([]int, nReduce)
 	c.AllocWork(files, nReduce, "Reduce")
 	log.Println("Reduce phase done")
+
+	c.stateLock.Lock()
+	c.state = "Exiting"
+	c.stateLock.Unlock()
+
+	// Done
+	log.Println("All works done, exiting")
+	c.Exit()
 }
 
 func (c *Coordinator) AllocWork(files []string, size int, workType string) {
@@ -100,7 +136,7 @@ func (c *Coordinator) AllocWork(files []string, size int, workType string) {
 		c.workerMapLock.RLock()
 		defer c.workerMapLock.RUnlock()
 		for id, worker := range c.workerMap {
-			if worker.state == Free {
+			if worker.state == WS_Free {
 				return id
 			}
 		}
@@ -150,7 +186,7 @@ func (c *Coordinator) AllocWork(files []string, size int, workType string) {
 			newJob = "Reduce" + " " + strconv.Itoa(readyWork) + " " + strconv.Itoa(readyWork)
 		}
 		c.workerMap[workerId] = worker{
-			state: Ready,
+			state: WS_Ready,
 			work:  newJob,
 		}
 		c.workerMapLock.Unlock()
@@ -159,6 +195,42 @@ func (c *Coordinator) AllocWork(files []string, size int, workType string) {
 
 		// TODO: Timer for timeout
 	}
+}
+
+func (c *Coordinator) Exit() {
+	log.Println("Send end signal to worker")
+	c.workerMapLock.Lock()
+	for key, worker := range c.workerMap {
+		worker.state = WS_Exiting
+		worker.work = "Exit"
+		c.workerMap[key] = worker
+	}
+	c.workerMapLock.Unlock()
+
+	for {
+		isAllDeath := true
+
+		c.workerMapLock.RLock()
+		for _, worker := range c.workerMap {
+			if worker.state != WS_Death {
+				isAllDeath = false
+				break
+			}
+		}
+		c.workerMapLock.RUnlock()
+
+		if !isAllDeath {
+			time.Sleep(1 * time.Second)
+			continue
+		} else {
+			break
+		}
+	}
+	log.Println("All workers have exited")
+	log.Println("Set state to Death")
+	c.stateLock.Lock()
+	c.state = "Death"
+	c.stateLock.Unlock()
 }
 
 // an example RPC handler.
@@ -188,7 +260,13 @@ func (c *Coordinator) server() {
 func (c *Coordinator) Done() bool {
 	ret := false
 
-	// Your code here.
+	c.stateLock.Lock()
+	if c.state == "Death" {
+		ret = true
+	} else {
+		ret = false
+	}
+	c.stateLock.Unlock()
 
 	return ret
 }
@@ -200,6 +278,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
 		workerMap:     map[int]worker{},
 		workerMapLock: sync.RWMutex{},
+		state:         "Starting",
+		stateLock:     sync.Mutex{},
 		nReduce:       nReduce,
 	}
 
