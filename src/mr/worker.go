@@ -20,9 +20,10 @@ type KeyValue struct {
 	Value string
 }
 
-type WorkerMeta struct {
+type WorkerType struct {
 	mapf    func(string, string) []KeyValue
 	reducef func(string, []string) string
+	logger  Logger
 	nReduce int
 	id      int
 }
@@ -34,8 +35,6 @@ type ByKey []KeyValue
 func (a ByKey) Len() int           { return len(a) }
 func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
-
-var workMetaMsg WorkerMeta
 
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -49,38 +48,40 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	workMetaMsg = WorkerMeta{
+	w := WorkerType{
 		mapf:    mapf,
 		reducef: reducef,
-		nReduce: CallGetNReduce(),
 		id:      os.Getpid(),
 	}
-	CallRegisterWorker()
+	w.nReduce = w.CallGetNReduce()
+	w.logger = *NewLogger("")
+	w.logger.prefix = fmt.Sprintf("[Worker %v]", w.id)
+	w.CallRegisterWorker()
 
 	for {
 		time.Sleep(3 * time.Second)
-		workerInfo := CallGetWorkerInfo()
+		workerInfo := w.CallGetWorkerInfo()
 		if workerInfo == nil {
-			log.Fatal("Something wrong when getting worker info")
+			w.logger.Fatal("Something wrong when getting worker info")
 		}
 		if workerInfo.State == WS_Free {
-			log.Println("Free now")
+			w.logger.Println("Free now")
 			continue
 		} else if workerInfo.State == WS_Ready {
-			err := do_it(workerInfo.Work)
+			err := w.do_it(workerInfo.Work)
 			if err != nil {
-				log.Println("Error when doing job: ", err.Error())
+				w.logger.Println("Error when doing job: ", err.Error())
 			}
 		} else if workerInfo.State == WS_Exiting {
-			log.Println("Receive coordinator exiting")
-			CallWorkerDeath()
-			log.Println("Report death")
+			w.logger.Println("Receive coordinator exiting")
+			w.CallWorkerDeath()
+			w.logger.Println("Report death")
 			os.Exit(0)
 		}
 	}
 }
 
-func do_it(work string) error {
+func (w *WorkerType) do_it(work string) error {
 
 	workArgs := strings.Split(work, " ")
 
@@ -88,39 +89,39 @@ func do_it(work string) error {
 	workId, _ := strconv.Atoi(workArgs[1]) // Id of map or reduce
 	workArg := workArgs[2]                 // "Map": key of mapf. "Reduce": nReduce of reducef.
 
-	log.Println("Get job: ", workType, workId, workArg)
+	w.logger.Println("Get job: ", workType, workId, workArg)
 
 	if workType == "Map" {
-		err := do_mapf(workId, workArg)
+		err := w.do_mapf(workId, workArg)
 		if err != nil {
 			return err
 		}
 	} else {
-		err := do_reducef(workId)
+		err := w.do_reducef(workId)
 		if err != nil {
 			return err
 		}
 	}
 
 	// Report finish
-	CallWorkFinish(workId, workType)
+	w.CallWorkFinish(workId, workType)
 
 	return nil
 }
 
-func do_mapf(workId int, workArg string) error {
+func (w *WorkerType) do_mapf(workId int, workArg string) error {
 	path := workArg
 	content, err := os.ReadFile(path)
 	if err != nil {
 		panic(err)
 	}
-	log.Printf("Reading from %v successful\n", path)
+	w.logger.Printf("Reading from %v successful\n", path)
 
-	mrKVs := workMetaMsg.mapf(path, string(content))
+	mrKVs := w.mapf(path, string(content))
 	sort.Sort(ByKey(mrKVs))
-	log.Printf("Map %v done!\n", workId)
+	w.logger.Printf("Map %v done!\n", workId)
 
-	nReduce := workMetaMsg.nReduce
+	nReduce := w.nReduce
 	for i := 0; i < nReduce; i++ {
 		// mr-MapNumber-ReduceNumber
 		intermediatePath := "mr-" + strconv.Itoa(workId) + "-" + strconv.Itoa(i)
@@ -146,7 +147,7 @@ func do_mapf(workId int, workArg string) error {
 	return nil
 }
 
-func do_reducef(workId int) error {
+func (w *WorkerType) do_reducef(workId int) error {
 	dir, err := os.Open(".")
 	if err != nil {
 		return err
@@ -172,7 +173,7 @@ func do_reducef(workId int) error {
 				return nil
 			}
 			defer intermediateFile.Close()
-			log.Println("Reading from: ", file.Name())
+			w.logger.Println("Reading from: ", file.Name())
 
 			dec := json.NewDecoder(intermediateFile)
 			for {
@@ -200,7 +201,7 @@ func do_reducef(workId int) error {
 		for k := i; k < j; k++ {
 			values = append(values, kva[k].Value)
 		}
-		output := workMetaMsg.reducef(kva[i].Key, values)
+		output := w.reducef(kva[i].Key, values)
 
 		// this is the correct format for each line of Reduce output.
 		fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
@@ -210,42 +211,42 @@ func do_reducef(workId int) error {
 	return nil
 }
 
-func CallRegisterWorker() {
+func (w *WorkerType) CallRegisterWorker() {
 	args := RegisterWorkerArgs{}
 
-	args.CallerId = workMetaMsg.id
+	args.CallerId = w.id
 
 	reply := RegisterWorkerReply{}
 
 	ok := call("Coordinator.RegisterWorker", &args, &reply)
 	if ok {
-		log.Printf("Worker %v register successfully\n", os.Getpid())
+		w.logger.Printf("Worker %v register successfully\n", os.Getpid())
 	} else {
-		log.Fatalf("Worker %v register failed\n", os.Getpid())
+		w.logger.Fatalf("Worker %v register failed\n", os.Getpid())
 	}
 }
 
-func CallGetWorkerInfo() *GetWorkerInfoReply {
+func (w *WorkerType) CallGetWorkerInfo() *GetWorkerInfoReply {
 	args := GetWorkerInfoArgs{}
 
-	args.CallerId = workMetaMsg.id
+	args.CallerId = w.id
 
 	reply := GetWorkerInfoReply{}
 
 	ok := call("Coordinator.GetWorkerInfo", &args, &reply)
 	if ok {
-		log.Println("Get worker info: ", reply)
+		w.logger.Println("Get worker info: ", reply)
 		return &reply
 	} else {
-		log.Println("Unable to get worker info")
+		w.logger.Println("Unable to get worker info")
 		return nil
 	}
 }
 
-func CallWorkFinish(workId int, workType string) {
+func (w *WorkerType) CallWorkFinish(workId int, workType string) {
 	args := WorkFinishArgs{}
 
-	args.CallerId = workMetaMsg.id
+	args.CallerId = w.id
 	args.WorkId = workId
 	args.WorkType = workType
 
@@ -253,28 +254,28 @@ func CallWorkFinish(workId int, workType string) {
 
 	ok := call("Coordinator.WorkFinish", &args, &reply)
 	if ok {
-		log.Println("Send finish message to coordinator: ", args)
+		w.logger.Println("Send finish message to coordinator: ", args)
 	} else {
-		log.Println("Failed to send finish message to coordinator: ", args)
+		w.logger.Println("Failed to send finish message to coordinator: ", args)
 	}
 }
 
-func CallWorkerDeath() {
+func (w *WorkerType) CallWorkerDeath() {
 	args := WorkerDeathArgs{
-		CallId: workMetaMsg.id,
+		CallId: w.id,
 	}
 
 	reply := WorkerDeathReply{}
 
 	ok := call("Coordinator.WorkerDeath", &args, &reply)
 	if ok {
-		log.Print("Send death signal to coordinator")
+		w.logger.Println("Send death signal to coordinator")
 	} else {
-		log.Fatal("Error to send death signal to coordinato")
+		w.logger.Fatal("Error to send death signal to coordinato")
 	}
 }
 
-func CallGetNReduce() int {
+func (w *WorkerType) CallGetNReduce() int {
 	// TODO: A more gentle way to get coordinator meta message
 	args := GetNReduceArgs{}
 

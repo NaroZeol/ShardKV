@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"log"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -23,6 +22,7 @@ type Coordinator struct {
 	workInfoLock  sync.RWMutex
 	state         string // Working, Starting, Exiting, Death
 	stateLock     sync.Mutex
+	logger        Logger
 	nReduce       int
 }
 
@@ -42,7 +42,7 @@ func (c *Coordinator) RegisterWorker(args *RegisterWorkerArgs, reply *RegisterWo
 	}
 	c.workerMapLock.Unlock()
 
-	log.Printf("Worker %v register suceessfully\n", args.CallerId)
+	c.logger.Printf("Worker %v register suceessfully\n", args.CallerId)
 
 	return nil
 }
@@ -80,9 +80,9 @@ func (c *Coordinator) WorkFinish(args *WorkFinishArgs, reply *WorkFinishReply) e
 		c.workInfo[args.WorkId] = -1 // -1 as completed
 		c.workInfoLock.Unlock()
 
-		log.Print("WorkerFinish is called with ", *args)
+		c.logger.Println("WorkerFinish is called with ", args)
 	} else if args.WorkType == "Reduce" {
-		log.Print("WorkerFinish is called with ", *args)
+		c.logger.Println("WorkerFinish is called with ", args)
 	}
 
 	return nil
@@ -111,23 +111,23 @@ func (c *Coordinator) run(files []string, nReduce int) {
 	c.stateLock.Unlock()
 
 	// Map phase
-	log.Println("Map phase start")
+	c.logger.Println("Map phase start")
 	c.workInfo = make([]int, len(files))
 	c.AllocWork(files, nMap, "Map")
-	log.Println("Map phase done")
+	c.logger.Println("Map phase done")
 
 	// Reduce phase
-	log.Println("Reduce phase start")
+	c.logger.Println("Reduce phase start")
 	c.workInfo = make([]int, nReduce)
 	c.AllocWork(files, nReduce, "Reduce")
-	log.Println("Reduce phase done")
+	c.logger.Println("Reduce phase done")
 
 	c.stateLock.Lock()
 	c.state = "Exiting"
 	c.stateLock.Unlock()
 
 	// Done
-	log.Println("All works done, exiting")
+	c.logger.Println("All works done, exiting")
 	c.Exit()
 }
 
@@ -160,7 +160,7 @@ func (c *Coordinator) AllocWork(files []string, size int, workType string) {
 
 		if readyWork == -1 {
 			if isWorking {
-				log.Println("Waiting all works to be finished")
+				c.logger.Println("Waiting all works to be finished")
 				time.Sleep(1 * time.Second)
 				continue
 			} else {
@@ -191,14 +191,14 @@ func (c *Coordinator) AllocWork(files []string, size int, workType string) {
 		}
 		c.workerMapLock.Unlock()
 
-		log.Printf("Worker %v get work: %v\n", workerId, newJob)
+		c.logger.Printf("Worker %v get work: %v\n", workerId, newJob)
 
 		// TODO: Timer for timeout
 	}
 }
 
 func (c *Coordinator) Exit() {
-	log.Println("Send end signal to worker")
+	c.logger.Println("Send end signal to worker")
 	c.workerMapLock.Lock()
 	for key, worker := range c.workerMap {
 		worker.state = WS_Exiting
@@ -226,8 +226,8 @@ func (c *Coordinator) Exit() {
 			break
 		}
 	}
-	log.Println("All workers have exited")
-	log.Println("Set state to Death")
+	c.logger.Println("All workers have exited")
+	c.logger.Println("Set state to Death")
 	c.stateLock.Lock()
 	c.state = "Death"
 	c.stateLock.Unlock()
@@ -250,7 +250,7 @@ func (c *Coordinator) server() {
 	os.Remove(sockname)
 	l, e := net.Listen("unix", sockname)
 	if e != nil {
-		log.Fatal("listen error:", e)
+		c.logger.Fatal("listen error:", e)
 	}
 	go http.Serve(l, nil)
 }
@@ -280,6 +280,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		workerMapLock: sync.RWMutex{},
 		state:         "Starting",
 		stateLock:     sync.Mutex{},
+		logger:        *NewLogger("[Coordinator]"),
 		nReduce:       nReduce,
 	}
 
