@@ -15,10 +15,15 @@ type worker struct {
 	work  string
 }
 
+type workInfo struct {
+	state     int       // currently: -1->done 0->ready or id of worker
+	timestamp time.Time // Only avild when state is not 0 or -1
+}
+
 type Coordinator struct {
 	workerMap     map[int]worker
 	workerMapLock sync.RWMutex
-	workInfo      []int // currently: -1->done 0->ready or id of worker
+	workInfo      []workInfo
 	workInfoLock  sync.RWMutex
 	state         string // Working, Starting, Exiting, Death
 	stateLock     sync.Mutex
@@ -68,21 +73,25 @@ func (c *Coordinator) GetNReduce(args *GetNReduceArgs, reply *GetNReduceReply) e
 
 // report a work has been finished
 func (c *Coordinator) WorkFinish(args *WorkFinishArgs, reply *WorkFinishReply) error {
+	c.workerMapLock.Lock()
+	c.workInfoLock.Lock()
+	defer c.workerMapLock.Unlock()
+	defer c.workInfoLock.Unlock()
+
+	if c.workerMap[args.CallerId].state == WS_Death {
+		return rpc.ServerError("This worker has marked Death")
+	}
+
 	if args.WorkType == "Map" || args.WorkType == "Reduce" {
-		c.workerMapLock.Lock()
 		c.workerMap[args.CallerId] = worker{
 			state: WS_Free,
 			work:  "",
 		}
-		c.workerMapLock.Unlock()
+		c.workInfo[args.WorkId].state = -1 // -1 as completed
 
-		c.workInfoLock.Lock()
-		c.workInfo[args.WorkId] = -1 // -1 as completed
-		c.workInfoLock.Unlock()
-
-		c.logger.Println("WorkerFinish is called with ", args)
+		c.logger.Println("WorkerFinish is called with ", *args)
 	} else if args.WorkType == "Reduce" {
-		c.logger.Println("WorkerFinish is called with ", args)
+		c.logger.Println("WorkerFinish is called with ", *args)
 	}
 
 	return nil
@@ -112,13 +121,13 @@ func (c *Coordinator) run(files []string, nReduce int) {
 
 	// Map phase
 	c.logger.Println("Map phase start")
-	c.workInfo = make([]int, len(files))
+	c.workInfo = make([]workInfo, len(files))
 	c.AllocWork(files, nMap, "Map")
 	c.logger.Println("Map phase done")
 
 	// Reduce phase
 	c.logger.Println("Reduce phase start")
-	c.workInfo = make([]int, nReduce)
+	c.workInfo = make([]workInfo, nReduce)
 	c.AllocWork(files, nReduce, "Reduce")
 	c.logger.Println("Reduce phase done")
 
@@ -144,15 +153,34 @@ func (c *Coordinator) AllocWork(files []string, size int, workType string) {
 	}
 
 	for {
+		// Crash Recover
+		// Currently, a low efficiency solution
+		c.workInfoLock.Lock()
+		for i, work := range c.workInfo {
+			if work.state != 0 && work.state != -1 &&
+				time.Since(work.timestamp).Seconds() > 10 { // working by a work but not finished in 10s
+				c.workerMapLock.Lock()
+				c.workerMap[work.state] = worker{
+					state: WS_Death,
+				}
+				c.workerMapLock.Unlock()
+				c.logger.Printf("worker %v didn't finish work %v in 10s", work.state, i)
+
+				work.state = 0 // No alloc
+				c.workInfo[i] = work
+			}
+		}
+
+		c.workInfoLock.Unlock()
 		readyWork := -1
 		isWorking := false
 		c.workInfoLock.Lock()
 		for i := 0; i < size; i++ {
 			// find a ready work
-			if c.workInfo[i] == 0 {
+			if c.workInfo[i].state == 0 {
 				readyWork = i
 				break
-			} else if c.workInfo[i] != -1 {
+			} else if c.workInfo[i].state != -1 {
 				isWorking = true
 			}
 		}
@@ -175,7 +203,8 @@ func (c *Coordinator) AllocWork(files []string, size int, workType string) {
 		}
 
 		c.workInfoLock.Lock()
-		c.workInfo[readyWork] = workerId
+		c.workInfo[readyWork].state = workerId
+		c.workInfo[readyWork].timestamp = time.Now()
 		c.workInfoLock.Unlock()
 
 		c.workerMapLock.Lock()
@@ -192,8 +221,6 @@ func (c *Coordinator) AllocWork(files []string, size int, workType string) {
 		c.workerMapLock.Unlock()
 
 		c.logger.Printf("Worker %v get work: %v\n", workerId, newJob)
-
-		// TODO: Timer for timeout
 	}
 }
 
@@ -201,6 +228,9 @@ func (c *Coordinator) Exit() {
 	c.logger.Println("Send end signal to worker")
 	c.workerMapLock.Lock()
 	for key, worker := range c.workerMap {
+		if worker.state == WS_Death {
+			continue
+		}
 		worker.state = WS_Exiting
 		worker.work = "Exit"
 		c.workerMap[key] = worker

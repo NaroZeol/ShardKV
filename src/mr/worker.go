@@ -59,7 +59,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	w.CallRegisterWorker()
 
 	for {
-		time.Sleep(3 * time.Second)
+		time.Sleep(1 * time.Second)
 		workerInfo := w.CallGetWorkerInfo()
 		if workerInfo == nil {
 			w.logger.Fatal("Something wrong when getting worker info")
