@@ -6,8 +6,10 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
-import "strconv"
+import (
+	"os"
+	"strconv"
+)
 
 //
 // example to show how to declare the arguments
@@ -29,6 +31,8 @@ type RegisterWorkerArgs struct {
 }
 
 type RegisterWorkerReply struct {
+	IsErr  bool
+	ErrStr string
 }
 
 type GetWorkerInfoArgs struct {
@@ -47,6 +51,8 @@ type WorkFinishArgs struct {
 }
 
 type WorkFinishReply struct {
+	IsErr  bool
+	ErrStr string
 }
 
 type GetNReduceArgs struct {

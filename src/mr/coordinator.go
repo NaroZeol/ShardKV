@@ -37,7 +37,9 @@ func (c *Coordinator) RegisterWorker(args *RegisterWorkerArgs, reply *RegisterWo
 	defer c.stateLock.Unlock()
 
 	if c.state != "Working" {
-		return rpc.ServerError("RPC server is not working!")
+		reply.IsErr = true
+		reply.ErrStr = "RPC server is not working"
+		return nil // I hate rpc to write to log... Bad hack...
 	}
 
 	c.workerMapLock.Lock() // Writer lock
@@ -79,7 +81,9 @@ func (c *Coordinator) WorkFinish(args *WorkFinishArgs, reply *WorkFinishReply) e
 	defer c.workInfoLock.Unlock()
 
 	if c.workerMap[args.CallerId].state == WS_Death {
-		return rpc.ServerError("This worker has marked Death")
+		reply.IsErr = true
+		reply.ErrStr = "this worker has marked Death"
+		return nil // This bad hack is to avoid rpc to write to log
 	}
 
 	if args.WorkType == "Map" || args.WorkType == "Reduce" {

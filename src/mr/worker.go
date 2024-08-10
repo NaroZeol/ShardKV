@@ -62,7 +62,8 @@ func Worker(mapf func(string, string) []KeyValue,
 		time.Sleep(1 * time.Second)
 		workerInfo := w.CallGetWorkerInfo()
 		if workerInfo == nil {
-			w.logger.Fatal("Something wrong when getting worker info")
+			w.logger.Println("Something wrong when getting worker info")
+			continue
 		}
 		if workerInfo.State == WS_Free {
 			w.logger.Println("Free now")
@@ -216,13 +217,16 @@ func (w *WorkerType) CallRegisterWorker() {
 
 	args.CallerId = w.id
 
-	reply := RegisterWorkerReply{}
+	reply := RegisterWorkerReply{
+		IsErr: false,
+	}
 
 	ok := call("Coordinator.RegisterWorker", &args, &reply)
-	if ok {
-		w.logger.Printf("Worker %v register successfully\n", os.Getpid())
+	if ok && !reply.IsErr {
+		w.logger.Println("register successfully")
 	} else {
-		w.logger.Fatalf("Worker %v register failed\n", os.Getpid())
+		w.logger.Println("register failed: ", reply.ErrStr)
+		os.Exit(1)
 	}
 }
 
@@ -250,13 +254,16 @@ func (w *WorkerType) CallWorkFinish(workId int, workType string) {
 	args.WorkId = workId
 	args.WorkType = workType
 
-	reply := WorkFinishReply{}
+	reply := WorkFinishReply{
+		IsErr:  false,
+		ErrStr: "",
+	}
 
 	ok := call("Coordinator.WorkFinish", &args, &reply)
-	if ok {
+	if ok && !reply.IsErr {
 		w.logger.Println("Send finish message to coordinator: ", args)
 	} else {
-		w.logger.Println("Failed to send finish message to coordinator: ", args)
+		w.logger.Println("Error to send finish message to coordinator: ", reply.ErrStr)
 	}
 }
 
@@ -271,7 +278,7 @@ func (w *WorkerType) CallWorkerDeath() {
 	if ok {
 		w.logger.Println("Send death signal to coordinator")
 	} else {
-		w.logger.Fatal("Error to send death signal to coordinato")
+		w.logger.Println("Error to send death signal to coordinator")
 	}
 }
 
