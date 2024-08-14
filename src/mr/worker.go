@@ -2,6 +2,7 @@ package mr
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -55,7 +56,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	}
 	w.nReduce = w.CallGetNReduce()
 	w.logger = *NewLogger("")
-	w.logger.prefix = fmt.Sprintf("[Worker %v]", w.id)
+	w.logger.prefix = fmt.Sprintf("\033[35m[Worker %v]\033[0m", w.id)
 	w.CallRegisterWorker()
 
 	for {
@@ -90,7 +91,7 @@ func (w *WorkerType) do_it(work string) error {
 	workId, _ := strconv.Atoi(workArgs[1]) // Id of map or reduce
 	workArg := workArgs[2]                 // "Map": key of mapf. "Reduce": nReduce of reducef.
 
-	w.logger.Println("Get job: ", workType, workId, workArg)
+	w.logger.Println("Get work: ", work)
 
 	if workType == "Map" {
 		err := w.do_mapf(workId, workArg)
@@ -103,9 +104,6 @@ func (w *WorkerType) do_it(work string) error {
 			return err
 		}
 	}
-
-	// Report finish
-	w.CallWorkFinish(workId, workType)
 
 	return nil
 }
@@ -121,14 +119,15 @@ func (w *WorkerType) do_mapf(workId int, workArg string) error {
 	mrKVs := w.mapf(path, string(content))
 	sort.Sort(ByKey(mrKVs))
 	w.logger.Printf("Map %v done!\n", workId)
+	w.logger.Println("Write to temp files")
 
 	nReduce := w.nReduce
 	for i := 0; i < nReduce; i++ {
-		// mr-MapNumber-ReduceNumber
-		intermediatePath := "mr-" + strconv.Itoa(workId) + "-" + strconv.Itoa(i)
+		// mr-tmp-workerID-MapNumber-ReduceNumber
+		// use tmp files to make it automic
+		tmpPAth := "mr-tmp-" + strconv.Itoa(w.id) + "-" + strconv.Itoa(workId) + "-" + strconv.Itoa(i)
 
-		// TODO: atomic write
-		file, err := os.OpenFile(intermediatePath, os.O_CREATE|os.O_TRUNC|os.O_RDWR,
+		file, err := os.OpenFile(tmpPAth, os.O_CREATE|os.O_TRUNC|os.O_RDWR,
 			os.ModeAppend|os.ModePerm)
 		if err != nil {
 			return err
@@ -139,8 +138,42 @@ func (w *WorkerType) do_mapf(workId int, workArg string) error {
 			if ihash(kv.Key)%nReduce == i {
 				err := enc.Encode(&kv)
 				if err != nil {
-					return nil
+					return err
 				}
+			}
+		}
+	}
+
+	// Report finish
+	reply := w.CallWorkFinish(workId, "Map")
+
+	// Only rename when coordinator says OK
+	if !reply.IsErr {
+		w.logger.Println("Rename temp files")
+		dir, err := os.Open(".")
+		if err != nil {
+			return err
+		}
+		defer dir.Close()
+		files, err := dir.Readdir(-1)
+		if err != nil {
+			return err
+		}
+
+		regexPattern := fmt.Sprintf(`^mr-tmp-%v-(\d+)-(\d+)$`, w.id)
+		regex, err := regexp.Compile(regexPattern)
+		if err != nil {
+			return err
+		}
+
+		for _, file := range files {
+			if regex.MatchString(file.Name()) {
+				strA := strings.Split(file.Name(), "-")
+				if len(strA) != 5 {
+					return errors.New(fmt.Sprint("Wrong when handle filename: ", file.Name()))
+				}
+				newPath := "mr-" + strA[3] + "-" + strA[4]
+				os.Rename(file.Name(), newPath)
 			}
 		}
 	}
@@ -156,25 +189,25 @@ func (w *WorkerType) do_reducef(workId int) error {
 	defer dir.Close()
 	files, err := dir.Readdir(-1)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	regexPattern := fmt.Sprintf(`^mr-(\d+)-%v$`, workId)
 	regex, err := regexp.Compile(regexPattern)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	kva := make([]KeyValue, 0)
 
+	w.logger.Println("Reading from intermediate files")
 	for _, file := range files {
 		if regex.MatchString(file.Name()) {
 			intermediateFile, err := os.Open(file.Name())
 			if err != nil {
-				return nil
+				return err
 			}
 			defer intermediateFile.Close()
-			w.logger.Println("Reading from: ", file.Name())
 
 			dec := json.NewDecoder(intermediateFile)
 			for {
@@ -189,6 +222,7 @@ func (w *WorkerType) do_reducef(workId int) error {
 
 	sort.Sort(ByKey(kva))
 
+	// TODO: Atomic write
 	oPath := "mr-out-" + strconv.Itoa(workId)
 	ofile, _ := os.Create(oPath)
 
@@ -209,6 +243,14 @@ func (w *WorkerType) do_reducef(workId int) error {
 
 		i = j
 	}
+
+	// Report finish
+	reply := w.CallWorkFinish(workId, "Reduce")
+
+	if reply.IsErr {
+		return errors.New(reply.ErrStr)
+	}
+
 	return nil
 }
 
@@ -247,7 +289,7 @@ func (w *WorkerType) CallGetWorkerInfo() *GetWorkerInfoReply {
 	}
 }
 
-func (w *WorkerType) CallWorkFinish(workId int, workType string) {
+func (w *WorkerType) CallWorkFinish(workId int, workType string) WorkFinishReply {
 	args := WorkFinishArgs{}
 
 	args.CallerId = w.id
@@ -265,6 +307,8 @@ func (w *WorkerType) CallWorkFinish(workId int, workType string) {
 	} else {
 		w.logger.Println("Error to send finish message to coordinator: ", reply.ErrStr)
 	}
+
+	return reply
 }
 
 func (w *WorkerType) CallWorkerDeath() {
