@@ -75,8 +75,8 @@ func (c *Coordinator) GetNReduce(args *GetNReduceArgs, reply *GetNReduceReply) e
 
 // report a work has been finished
 func (c *Coordinator) WorkFinish(args *WorkFinishArgs, reply *WorkFinishReply) error {
-	c.workerMapLock.Lock()
 	c.workInfoLock.Lock()
+	c.workerMapLock.Lock()
 	defer c.workerMapLock.Unlock()
 	defer c.workInfoLock.Unlock()
 
@@ -142,6 +142,7 @@ func (c *Coordinator) run(files []string, nReduce int) {
 	// Done
 	c.logger.Println("All works done, exiting")
 	c.Exit()
+	c.logger.Println("Exit successfully!")
 }
 
 func (c *Coordinator) AllocWork(files []string, size int, workType string) {
@@ -260,8 +261,10 @@ func (c *Coordinator) Exit() {
 			break
 		}
 	}
+
 	c.logger.Println("All workers have exited")
 	c.logger.Println("Set state to Death")
+
 	c.stateLock.Lock()
 	c.state = "Death"
 	c.stateLock.Unlock()
@@ -314,7 +317,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		workerMapLock: sync.RWMutex{},
 		state:         "Starting",
 		stateLock:     sync.Mutex{},
-		logger:        *NewLogger("[Coordinator]"),
+		logger:        *NewLogger("\033[36m[Coordinator]\033[0m"),
 		nReduce:       nReduce,
 	}
 
