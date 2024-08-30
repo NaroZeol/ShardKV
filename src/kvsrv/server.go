@@ -15,49 +15,57 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 type KVServer struct {
-	mu sync.Mutex
-
-	// Your definitions here.
-	mp map[string]string
+	mu     sync.Mutex
+	cMu    sync.Mutex
+	dMu    sync.Mutex
+	mp     map[string]string
+	cliMap map[int64]bool
+	dupMap map[int64]string
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+	// Get doesn't need any scheme to avoild duplicate operation
+	// Just retutn current value
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	value, ok := kv.mp[args.Key]
-	if ok {
-		reply.Value = value
-	} else {
-		reply.Value = ""
-	}
+	reply.Value = kv.mp[args.Key]
+
+	DPrintf("[Server] Get(%v) call is finished", args)
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	value, ok := kv.mp[args.Key]
-	if ok {
-		reply.Value = value
-	} else {
-		reply.Value = ""
-	}
-
 	kv.mp[args.Key] = args.Value
+
+	// Put operation doesn't need return old value
+	DPrintf("[Server] Put(%v) call is finished", args)
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
+	kv.cMu.Lock()
+	kv.dMu.Lock()
 	defer kv.mu.Unlock()
+	defer kv.cMu.Unlock()
+	defer kv.dMu.Unlock()
+	num := kv.cliMap[args.Id]
 
-	value, ok := kv.mp[args.Key]
-	if !ok {
-		value = ""
+	if num != args.Opstate { // client call for an operation which has been done
+		reply.Value = kv.dupMap[args.Id]
+		return
 	}
 
-	kv.mp[args.Key] = value + args.Value
-	reply.Value = value
+	kv.cliMap[args.Id] = !kv.cliMap[args.Id]
+
+	reply.Value = kv.mp[args.Key]
+	kv.mp[args.Key] = kv.mp[args.Key] + args.Value
+
+	kv.dupMap[args.Id] = reply.Value
+
+	DPrintf("[Server] Append(%v) call is finished", args)
 }
 
 func StartKVServer() *KVServer {
@@ -65,5 +73,7 @@ func StartKVServer() *KVServer {
 
 	// You may need initialization code here.
 	kv.mp = make(map[string]string)
+	kv.cliMap = make(map[int64]bool)
+	kv.dupMap = make(map[int64]string)
 	return kv
 }

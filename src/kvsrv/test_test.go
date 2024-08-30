@@ -6,7 +6,6 @@ import (
 
 	"fmt"
 	"io/ioutil"
-	"log"
 	"math/rand"
 	"runtime"
 	"strconv"
@@ -599,7 +598,7 @@ func TestMemManyAppends(t *testing.T) {
 		t.Fatalf("error: server using too much memory m0 %d m1 %d\n", m0, m1)
 	}
 
-	log.Printf("m0 %d m1 %d\n", m0, m1)
+	// log.Printf("m0 %d m1 %d\n", m0, m1)
 
 	cfg.deleteClient(ck)
 	cfg.end()
