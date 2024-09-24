@@ -181,7 +181,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 		rf.votedFor = nil
 		rf.state = RS_Follower
+
 		log.Printf("[%v] recieve a RequestVote with higher term, change its term to %v, reset votedFor to nil\n", rf.me, rf.currentTerm)
+		log.Printf("[%v] turn to follower\n", rf.me)
 	}
 
 	isUpToDate := (args.LastLogTerm > lastLogTerm) || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)
@@ -190,8 +192,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} else if rf.votedFor != nil && *rf.votedFor != args.CandiateId {
 		log.Printf("[%v] refuse to vote for [%v] in term %v because it has voted for [%v]", rf.me, args.CandiateId, args.Term, *rf.votedFor)
 	} else if (rf.votedFor == nil || *rf.votedFor == args.CandiateId) && isUpToDate {
-		// rf.currentTerm = args.Term
+		rf.currentTerm = args.Term
 		rf.votedFor = &args.CandiateId
+		rf.lastHeartBeat = time.Now() // According to the paper, heart beat time should reset when voting to somebody
+		rf.state = RS_Follower
+
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
 		log.Printf("[%v] vote for [%v] in term %v\n", rf.me, args.CandiateId, args.Term)
@@ -209,8 +214,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// State Synchronization
 	if args.Term >= rf.currentTerm {
+		formerState := rf.state
+
 		rf.currentTerm = args.Term
 		rf.state = RS_Follower
+		if formerState != RS_Follower {
+			log.Printf("[%v] turn to follower\n", rf.me)
+		}
 
 		reply.Success = true
 
@@ -314,9 +324,11 @@ func (rf *Raft) ticker() {
 		// Check if a leader election should be started.
 		rf.mu.Lock()
 
+		// Heart beat timeout
 		if rf.state != RS_Leader && time.Since(rf.lastHeartBeat) > TM_HeartBeatTimeout {
 			log.Printf("[%v] heart beat timeout\n", rf.me)
 			rf.state = RS_Candiate
+			log.Printf("[%v] turn to candiate\n", rf.me)
 			// randomization
 			rf.mu.Unlock()
 			ms := (rand.Int63() % int64(TM_RandomWaitingTime))
@@ -324,9 +336,10 @@ func (rf *Raft) ticker() {
 			rf.mu.Lock()
 
 			// Start an election, if other one win the election, state will not be Candiate
-			if rf.state != RS_Candiate {
+			// or voting to someone that reset heartbeat time
+			if rf.state != RS_Candiate || time.Since(rf.lastHeartBeat) < TM_HeartBeatTimeout {
 				rf.mu.Unlock()
-			} else if rf.election() {
+			} else if rf.election() { // rf.election hold lock and free when function finish
 				go rf.sendHeartBeat()
 			}
 		} else {
@@ -371,7 +384,15 @@ func (rf *Raft) election() bool {
 			// repeat sending vote request
 			ok := false
 			for !ok {
-				ok = rf.sendRequestVote(num, &args, &reply)
+				rf.mu.Lock()
+				isCandiate := rf.state == RS_Candiate
+				isSameTerm := rf.currentTerm == votedForTerm
+				rf.mu.Unlock()
+				if isCandiate && isSameTerm {
+					ok = rf.sendRequestVote(num, &args, &reply)
+				} else {
+					return
+				}
 			}
 			// log.Printf("[%v] send RequestVote to [%v] successfully\n", votedForCandiate, num)
 
@@ -383,7 +404,7 @@ func (rf *Raft) election() bool {
 					rf.currentTerm = reply.Term
 					rf.state = RS_Follower
 					rf.votedFor = nil
-					log.Printf("[%v] stop election because [%v] has higher term\n", votedForCandiate, num)
+					log.Printf("[%v] stop election because [%v] has higher term, turn to follower\n", votedForCandiate, num)
 					isCancel = true
 				}
 
@@ -425,6 +446,7 @@ func (rf *Raft) election() bool {
 }
 
 func (rf *Raft) sendHeartBeat() {
+	isCancel := false
 	for {
 		rf.mu.Lock()
 		if rf.state != RS_Leader {
@@ -443,7 +465,6 @@ func (rf *Raft) sendHeartBeat() {
 		}
 
 		senderTerm := rf.currentTerm
-		isCancel := false
 		for i := range rf.peers {
 			if i == rf.me {
 				continue
@@ -457,9 +478,10 @@ func (rf *Raft) sendHeartBeat() {
 				for !ok {
 					rf.mu.Lock()
 					isLeader := rf.state == RS_Leader
+					isSameTerm := rf.currentTerm == senderTerm
 					rf.mu.Unlock()
 
-					if isLeader {
+					if isLeader && isSameTerm {
 						ok = rf.sendAppendEntries(num, &args, &reply)
 					} else {
 						return
@@ -471,6 +493,7 @@ func (rf *Raft) sendHeartBeat() {
 					// Cancel only once
 					if !isCancel {
 						rf.state = RS_Follower
+						rf.votedFor = nil
 						rf.currentTerm = reply.Term
 						log.Printf("[%v] get a reply from higher term %v, turn to follower\n", rf.me, reply.Term)
 						isCancel = true
