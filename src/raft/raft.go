@@ -167,6 +167,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	log.Printf("[%v] receive RequestVote from [%v] in term %v\n", rf.me, args.CandiateId, args.Term)
+
 	// default return
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
@@ -182,8 +184,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = nil
 		rf.state = RS_Follower
 
-		log.Printf("[%v] recieve a RequestVote with higher term, change its term to %v, reset votedFor to nil\n", rf.me, rf.currentTerm)
-		log.Printf("[%v] turn to follower\n", rf.me)
+		log.Printf("[%v] recieve a RequestVote with higher term, change its term to %v\n", rf.me, rf.currentTerm)
 	}
 
 	isUpToDate := (args.LastLogTerm > lastLogTerm) || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)
@@ -325,7 +326,7 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 
 		// Heart beat timeout
-		if rf.state != RS_Leader && time.Since(rf.lastHeartBeat) > TM_HeartBeatTimeout {
+		if rf.state != RS_Leader && time.Since(rf.lastHeartBeat) > TM_ElectionTimeout {
 			log.Printf("[%v] heart beat timeout\n", rf.me)
 			rf.state = RS_Candiate
 			log.Printf("[%v] turn to candiate\n", rf.me)
@@ -337,10 +338,12 @@ func (rf *Raft) ticker() {
 
 			// Start an election, if other one win the election, state will not be Candiate
 			// or voting to someone that reset heartbeat time
-			if rf.state != RS_Candiate || time.Since(rf.lastHeartBeat) < TM_HeartBeatTimeout {
+			if rf.state != RS_Candiate || time.Since(rf.lastHeartBeat) < TM_ElectionTimeout {
 				rf.mu.Unlock()
-			} else if rf.election() { // rf.election hold lock and free when function finish
-				go rf.sendHeartBeat()
+			} else {
+				rf.lastHeartBeat = time.Now() // reset election timer
+				rf.mu.Unlock()
+				go rf.election()
 			}
 		} else {
 			rf.mu.Unlock()
@@ -348,13 +351,13 @@ func (rf *Raft) ticker() {
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
+		ms := 50 //+ (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
 
-func (rf *Raft) election() bool {
-	// hold rf.mu
+func (rf *Raft) election() {
+	rf.mu.Lock()
 	var ballotCount = 1
 	var ballotMutex = sync.Mutex{}
 
@@ -419,30 +422,27 @@ func (rf *Raft) election() bool {
 	}
 	rf.mu.Unlock()
 
-	var electTimer = time.Now()
-	// Waiting, should finish in TM_ElectionTImeout
-	for time.Since(electTimer) < TM_ElectionTimeout {
+	for {
 		ballotMutex.Lock()
 		ballot := ballotCount
 		ballotMutex.Unlock()
 
 		rf.mu.Lock()
-		if rf.state == RS_Candiate && ballot >= len(rf.peers)/2+1 { // exceed half, success
-			rf.state = RS_Leader
-			rf.mu.Unlock()
-			log.Printf("[%v] win the election in term %v", rf.me, votedForTerm)
-			return true
-		} else if rf.state != RS_Candiate { // state changed due to new leader send AppendEntries or a higher term RequetVote
+		if rf.state != RS_Candiate || rf.currentTerm != votedForTerm {
 			rf.mu.Unlock()
 			log.Printf("[%v] lose the election in term %v", rf.me, votedForTerm)
-			return false
+			return
+		} else if rf.state == RS_Candiate && ballot >= len(rf.peers)/2+1 { // exceed half, success
+			rf.state = RS_Leader
+			rf.mu.Unlock()
+			log.Printf("\033[31m[%v] win the election in term %v\033[0m", rf.me, votedForTerm)
+			go rf.sendHeartBeat()
+			return
 		}
 		rf.mu.Unlock()
 
-		time.Sleep(TM_ElectionTimeout / 5)
+		time.Sleep(50 * time.Millisecond)
 	}
-	log.Printf("[%v] election timeout in term %v", votedForCandiate, votedForTerm)
-	return false
 }
 
 func (rf *Raft) sendHeartBeat() {
