@@ -52,7 +52,8 @@ type ApplyMsg struct {
 
 type logEntry struct {
 	Term    int
-	Command string
+	Type    logType
+	Command interface{}
 }
 
 // A Go object implementing a single Raft peer.
@@ -67,11 +68,25 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
-	state         raftState
-	currentTerm   int
-	votedFor      *int
-	log           []logEntry
+	// Persistent state on all servers
+	state       raftState
+	currentTerm int
+	votedFor    *int
+	log         []logEntry
+
+	// Volatile state on all servers
+	commitIndex int
+	lastApplied int
+
+	// Volatile state on leaders
+	nextIndex  []int
+	matchIndex []int
+
+	// HeartBeat
 	lastHeartBeat time.Time
+
+	// Apply
+	applyCh chan ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -158,8 +173,10 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term         int
+	Success      bool
+	PrevLogIndex int
+	PrevLogTerm  int
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -219,6 +236,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		rf.currentTerm = args.Term
 		rf.state = RS_Follower
+		rf.commitIndex = args.LeaderCommit
 		if formerState != RS_Follower {
 			log.Printf("[%v] turn to follower\n", rf.me)
 		}
@@ -237,8 +255,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	rf.lastHeartBeat = time.Now()
-	// TODO: Apply log?
+	prevLogIndex := len(rf.log) - 1
+	prevLogTerm := rf.log[len(rf.log)-1].Term
+	if len(args.Entries) != 0 && prevLogIndex == args.PrevLogIndex && prevLogTerm == args.PrevLogTerm {
+		log.Printf("[%v] append entries", rf.me)
+		rf.lastHeartBeat = time.Now()
+		for _, entry := range args.Entries {
+			if entry.Type == LT_Normal {
+				rf.log = append(rf.log, entry)
+				// log.Printf("[%v] append an entry", rf.me)
+			}
+		}
+
+		reply.Success = true
+		reply.PrevLogIndex = prevLogIndex
+		reply.PrevLogTerm = prevLogTerm
+		return
+	}
+
+	if len(args.Entries) != 0 { // ignore heartbeat append failed
+		reply.PrevLogIndex = prevLogIndex
+		reply.PrevLogTerm = prevLogTerm
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		log.Printf("[%v] refuce to accept AppendEntries from [%v] in term %v because of different log entry{index: %v, term: %v}", rf.me, args.LeaderId, args.Term, prevLogIndex, prevLogTerm)
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -295,7 +336,85 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := -1
 	isLeader := true
 
-	// Your code here (3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.state != RS_Leader {
+		isLeader = false
+		return index, term, isLeader
+	}
+
+	newLog := logEntry{
+		Term:    rf.currentTerm,
+		Type:    LT_Normal,
+		Command: command,
+	}
+	rf.log = append(rf.log, newLog)
+	// TODO : persistence
+
+	cond := sync.NewCond(&rf.mu)
+	// use simple counter is only correct when configuration never change
+	finished := 0
+	finishedMutex := sync.Mutex{}
+
+	// go for it !
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+
+		// First arg
+		args := AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: len(rf.log) - 2,
+			PrevLogTerm:  rf.log[len(rf.log)-2].Term,
+			Entries:      append(make([]logEntry, 0), newLog),
+			LeaderCommit: rf.commitIndex,
+		}
+
+		go func(server int) {
+			ok := false
+			reply := AppendEntriesReply{}
+			for !rf.killed() && !ok {
+				ok = rf.sendAppendEntries(server, &args, &reply)
+			}
+
+			if reply.Success {
+				finishedMutex.Lock()
+				finished += 1
+				finishedMutex.Unlock()
+				cond.Broadcast()
+				log.Printf("[%v] send entry %v to [%v] success!", rf.me, args.PrevLogIndex+1, server)
+				return
+			}
+			// TODO: if failed
+		}(i)
+	}
+
+	checkMajority := func() bool {
+		// rf.mu.Lock() is always called before check
+		finishedMutex.Lock()
+		defer finishedMutex.Unlock()
+
+		if finished >= len(rf.peers)/2+1 {
+			return true
+		} else {
+			return false
+		}
+	}
+
+	for !rf.killed() && !checkMajority() {
+		cond.Wait()
+	}
+	log.Printf("[%v] entry %v replicate at majority machines, commit!", rf.me, len(rf.log)-1)
+
+	// Commit ! Start with lock holding
+	rf.commitIndex = len(rf.log) - 1
+
+	index = len(rf.log) - 1
+	term = rf.currentTerm
+	isLeader = true
 
 	return index, term, isLeader
 }
@@ -422,7 +541,7 @@ func (rf *Raft) election() {
 	}
 	rf.mu.Unlock()
 
-	for {
+	for !rf.killed() {
 		ballotMutex.Lock()
 		ballot := ballotCount
 		ballotMutex.Unlock()
@@ -447,7 +566,7 @@ func (rf *Raft) election() {
 
 func (rf *Raft) sendHeartBeat() {
 	isCancel := false
-	for {
+	for !rf.killed() {
 		rf.mu.Lock()
 		if rf.state != RS_Leader {
 			log.Printf("[%v] stop sending heartbeat entries because it is not leader\n", rf.me)
@@ -458,10 +577,10 @@ func (rf *Raft) sendHeartBeat() {
 		args := AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
-			PrevLogIndex: len(rf.log),
+			PrevLogIndex: len(rf.log) - 1,
 			PrevLogTerm:  rf.log[len(rf.log)-1].Term,
 			Entries:      []logEntry{},
-			// LeaderCommit: , no implementation
+			LeaderCommit: rf.commitIndex,
 		}
 
 		senderTerm := rf.currentTerm
@@ -500,16 +619,37 @@ func (rf *Raft) sendHeartBeat() {
 					}
 					rf.mu.Unlock()
 					return
-				} else if reply.Success {
-					// log.Printf("[%v] send heart beat to [%v] successful!\n", rf.me, num)
-				} else {
-					log.Fatalf("[%v] reach unreachable in sendHeartBeat\n", rf.me)
-				}
+				} //else if reply.Success {
+				// log.Printf("[%v] send heart beat to [%v] successful!\n", rf.me, num)
+				//} else {
+				// log.Fatalf("[%v] reach unreachable in sendHeartBeat\n", rf.me)
+				// }
 				rf.mu.Unlock()
 			}(i)
 		}
 		rf.mu.Unlock()
 		time.Sleep(TM_HeartBeatInterval) // 5 times per second
+	}
+}
+
+func (rf *Raft) applyEntries() {
+	for !rf.killed() {
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			if rf.log[i].Type == LT_Normal {
+				applyMsg := ApplyMsg{
+					CommandValid: true,
+					Command:      rf.log[i].Command,
+					CommandIndex: i,
+				}
+
+				rf.applyCh <- applyMsg
+				rf.lastApplied = i
+
+				log.Printf("[%v] apply entry %v to state machine", rf.me, i)
+			}
+		}
+
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -528,17 +668,28 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.mu = sync.Mutex{}
 
-	// Your initialization code here (3A, 3B, 3C).
+	// Persistent state on all servers
 	rf.currentTerm = 1
 	rf.votedFor = nil
 	rf.log = make([]logEntry, 0)
 	rf.log = append(rf.log, logEntry{
 		Term:    1,
-		Command: "",
+		Type:    LT_Noop,
+		Command: "", // no-op
 	})
-	rf.mu = sync.Mutex{}
+
+	// Volatile state on all servers
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+
+	// Volatile state on leaders
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
+
 	rf.lastHeartBeat = time.Now()
+	rf.applyCh = applyCh
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -546,6 +697,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	log.Printf("[%v] start!!!!!\n", rf.me)
 	// start ticker goroutine to start elections
 	go rf.ticker()
+	go rf.applyEntries()
 
 	return rf
 }
