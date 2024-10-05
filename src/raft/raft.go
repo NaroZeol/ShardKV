@@ -236,6 +236,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		rf.currentTerm = args.Term
 		rf.state = RS_Follower
+		// TODO: according to paper Figure 2,
+		// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 		rf.commitIndex = args.LeaderCommit
 		if formerState != RS_Follower {
 			log.Printf("[%v] turn to follower\n", rf.me)
@@ -258,7 +260,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	prevLogIndex := len(rf.log) - 1
 	prevLogTerm := rf.log[len(rf.log)-1].Term
 	if len(args.Entries) != 0 && prevLogIndex == args.PrevLogIndex && prevLogTerm == args.PrevLogTerm {
-		log.Printf("[%v] append entries", rf.me)
 		rf.lastHeartBeat = time.Now()
 		for _, entry := range args.Entries {
 			if entry.Type == LT_Normal {
@@ -266,6 +267,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				// log.Printf("[%v] append an entry", rf.me)
 			}
 		}
+		log.Printf("[%v] append entries from #%v to #%v", rf.me, prevLogIndex+1, len(rf.log)-1)
 
 		reply.Success = true
 		reply.PrevLogIndex = prevLogIndex
@@ -337,10 +339,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	if rf.state != RS_Leader {
 		isLeader = false
+		rf.mu.Unlock()
 		return index, term, isLeader
 	}
 
@@ -350,71 +352,34 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 	}
 	rf.log = append(rf.log, newLog)
-	// TODO : persistence
-
-	cond := sync.NewCond(&rf.mu)
-	// use simple counter is only correct when configuration never change
-	finished := 0
-	finishedMutex := sync.Mutex{}
-
-	// go for it !
-	for i := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-
-		// First arg
-		args := AppendEntriesArgs{
-			Term:         rf.currentTerm,
-			LeaderId:     rf.me,
-			PrevLogIndex: len(rf.log) - 2,
-			PrevLogTerm:  rf.log[len(rf.log)-2].Term,
-			Entries:      append(make([]logEntry, 0), newLog),
-			LeaderCommit: rf.commitIndex,
-		}
-
-		go func(server int) {
-			ok := false
-			reply := AppendEntriesReply{}
-			for !rf.killed() && !ok {
-				ok = rf.sendAppendEntries(server, &args, &reply)
-			}
-
-			if reply.Success {
-				finishedMutex.Lock()
-				finished += 1
-				finishedMutex.Unlock()
-				cond.Broadcast()
-				log.Printf("[%v] send entry %v to [%v] success!", rf.me, args.PrevLogIndex+1, server)
-				return
-			}
-			// TODO: if failed
-		}(i)
-	}
-
-	checkMajority := func() bool {
-		// rf.mu.Lock() is always called before check
-		finishedMutex.Lock()
-		defer finishedMutex.Unlock()
-
-		if finished >= len(rf.peers)/2+1 {
-			return true
-		} else {
-			return false
-		}
-	}
-
-	for !rf.killed() && !checkMajority() {
-		cond.Wait()
-	}
-	log.Printf("[%v] entry %v replicate at majority machines, commit!", rf.me, len(rf.log)-1)
-
-	// Commit ! Start with lock holding
-	rf.commitIndex = len(rf.log) - 1
+	rf.nextIndex[rf.me] = len(rf.log)
+	rf.matchIndex[rf.me] = len(rf.log) - 1
 
 	index = len(rf.log) - 1
 	term = rf.currentTerm
 	isLeader = true
+	log.Printf("[%v] leader append entry #%v in its log", rf.me, index)
+	rf.mu.Unlock()
+
+	// Waiting for apply
+	for !rf.killed() {
+		rf.mu.Lock()
+		if rf.state != RS_Leader { // failed to apply
+			index = -1
+			term = -1
+			isLeader = false
+			rf.mu.Unlock()
+			return index, term, isLeader
+		}
+		lastApplied := rf.lastApplied
+		rf.mu.Unlock()
+
+		if lastApplied >= index {
+			break
+		} else {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
 
 	return index, term, isLeader
 }
@@ -556,6 +521,7 @@ func (rf *Raft) election() {
 			rf.mu.Unlock()
 			log.Printf("\033[31m[%v] win the election in term %v\033[0m", rf.me, votedForTerm)
 			go rf.sendHeartBeat()
+			go rf.syncEntries()
 			return
 		}
 		rf.mu.Unlock()
@@ -633,6 +599,7 @@ func (rf *Raft) sendHeartBeat() {
 }
 
 func (rf *Raft) applyEntries() {
+	// TODO: fix data race
 	for !rf.killed() {
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 			if rf.log[i].Type == LT_Normal {
@@ -645,11 +612,91 @@ func (rf *Raft) applyEntries() {
 				rf.applyCh <- applyMsg
 				rf.lastApplied = i
 
-				log.Printf("[%v] apply entry %v to state machine", rf.me, i)
+				log.Printf("[%v] apply entry #%v to state machine", rf.me, i)
 			}
 		}
 
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (rf *Raft) syncEntries() {
+
+	for !rf.killed() {
+		rf.mu.Lock()
+
+		if rf.state != RS_Leader {
+			log.Printf("[%v] stop sync entries because it is not leader\n", rf.me)
+			rf.mu.Unlock()
+			break
+		}
+
+		currentIndex := len(rf.log) - 1
+		for i := range rf.peers {
+			if i == rf.me {
+				continue
+			}
+
+			if currentIndex >= rf.nextIndex[i] {
+				args := AppendEntriesArgs{
+					Term:         rf.currentTerm,
+					LeaderId:     rf.me,
+					PrevLogIndex: rf.nextIndex[i] - 1,            // Leader consider this follower's last log index
+					PrevLogTerm:  rf.log[rf.nextIndex[i]-1].Term, // Leader conside this follower's last log term
+					Entries:      rf.log[rf.nextIndex[i]:],
+				}
+				newNextIndex := len(rf.log)
+
+				go func(server int) {
+					ok := false
+					reply := AppendEntriesReply{}
+					for !rf.killed() && !ok {
+						ok = rf.sendAppendEntries(server, &args, &reply)
+					}
+
+					if reply.Success {
+						rf.mu.Lock()
+						log.Printf("[%v] send entries to [%v] from #%v to #%v successfully", rf.me, server, rf.nextIndex[server], newNextIndex-1)
+						rf.nextIndex[server] = newNextIndex // apply success, update next index
+						rf.matchIndex[server] = newNextIndex - 1
+						rf.mu.Unlock()
+					}
+
+					// TODO: failed?
+					if !reply.Success {
+						log.Fatalln("no implementation")
+					}
+				}(i)
+			}
+		}
+
+		rf.mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+
+		// Commit Check
+		rf.mu.Lock()
+		N := rf.commitIndex // name from paper
+		newCommitIndex := N
+		for {
+			counter := 0
+			for _, index := range rf.matchIndex {
+				if index >= N {
+					counter += 1
+				}
+			}
+
+			if counter >= len(rf.peers)/2+1 {
+				newCommitIndex = N
+			} else {
+				break
+			}
+
+			N++
+		}
+		if rf.log[newCommitIndex].Term == rf.currentTerm {
+			rf.commitIndex = newCommitIndex
+		}
+		rf.mu.Unlock()
 	}
 }
 
@@ -686,6 +733,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Volatile state on leaders
 	rf.nextIndex = make([]int, len(peers))
+	for i := range rf.nextIndex {
+		rf.nextIndex[i] = len(rf.log) // initialized to leader last log index + 1 (Figure 2)
+	}
 	rf.matchIndex = make([]int, len(peers))
 
 	rf.lastHeartBeat = time.Now()
@@ -697,6 +747,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	log.Printf("[%v] start!!!!!\n", rf.me)
 	// start ticker goroutine to start elections
 	go rf.ticker()
+	// start applyEntries goroutine to apply committed entries
 	go rf.applyEntries()
 
 	return rf
