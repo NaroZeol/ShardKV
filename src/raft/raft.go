@@ -589,7 +589,7 @@ func (rf *Raft) applyEntries() {
 	for !rf.killed() {
 		rf.mu.Lock()
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-			if rf.log[i].Type == LT_Normal {
+			if i < len(rf.log) && rf.log[i].Type == LT_Normal {
 				applyMsg := ApplyMsg{
 					CommandValid: true,
 					Command:      rf.log[i].Command,
