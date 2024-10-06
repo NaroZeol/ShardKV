@@ -585,74 +585,6 @@ func (rf *Raft) election() {
 	}
 }
 
-func (rf *Raft) sendHeartBeat() {
-	isCancel := false
-	for !rf.killed() {
-		rf.mu.Lock()
-		if rf.state != RS_Leader {
-			log.Printf("[%v] stop sending heartbeat entries because it is not leader\n", rf.me)
-			rf.mu.Unlock()
-			break
-		}
-
-		args := AppendEntriesArgs{
-			Term:         rf.currentTerm,
-			LeaderId:     rf.me,
-			PrevLogIndex: len(rf.log) - 1,
-			PrevLogTerm:  rf.log[len(rf.log)-1].Term,
-			Entries:      []logEntry{},
-			LeaderCommit: rf.commitIndex,
-		}
-
-		senderTerm := rf.currentTerm
-		for i := range rf.peers {
-			if i == rf.me {
-				continue
-			}
-
-			go func(num int) {
-				// perhaps no lock protect
-				reply := AppendEntriesReply{}
-
-				ok := false
-				for !ok {
-					rf.mu.Lock()
-					isLeader := rf.state == RS_Leader
-					isSameTerm := rf.currentTerm == senderTerm
-					rf.mu.Unlock()
-
-					if isLeader && isSameTerm {
-						ok = rf.sendAppendEntries(num, &args, &reply)
-					} else {
-						return
-					}
-				}
-
-				rf.mu.Lock()
-				if !reply.Success && reply.Term > senderTerm {
-					// Cancel only once
-					if !isCancel {
-						rf.state = RS_Follower
-						rf.votedFor = nil
-						rf.currentTerm = reply.Term
-						log.Printf("[%v] get a reply from higher term %v, turn to follower\n", rf.me, reply.Term)
-						isCancel = true
-					}
-					rf.mu.Unlock()
-					return
-				} //else if reply.Success {
-				// log.Printf("[%v] send heart beat to [%v] successful!\n", rf.me, num)
-				//} else {
-				// log.Fatalf("[%v] reach unreachable in sendHeartBeat\n", rf.me)
-				// }
-				rf.mu.Unlock()
-			}(i)
-		}
-		rf.mu.Unlock()
-		time.Sleep(TM_HeartBeatInterval) // 5 times per second
-	}
-}
-
 func (rf *Raft) applyEntries() {
 	for !rf.killed() {
 		rf.mu.Lock()
@@ -677,7 +609,7 @@ func (rf *Raft) applyEntries() {
 }
 
 func (rf *Raft) syncEntries() {
-
+	isCancel := false
 	for !rf.killed() {
 		rf.mu.Lock()
 
@@ -732,8 +664,16 @@ func (rf *Raft) syncEntries() {
 						}
 
 						rf.mu.Lock()
-						// Case 0: higher term, no handle, handle by heart beat
-						if rf.currentTerm < currReply.Term {
+						// Case 0: higher term, turn to follower
+						if senderTerm < currReply.Term {
+							// Cancel only once
+							if !isCancel {
+								rf.state = RS_Follower
+								rf.votedFor = nil
+								rf.currentTerm = currReply.Term
+								log.Printf("[%v] get a reply from higher term %v, turn to follower\n", rf.me, currReply.Term)
+								isCancel = true
+							}
 							rf.mu.Unlock()
 							return
 						}
@@ -803,8 +743,7 @@ func (rf *Raft) syncEntries() {
 		}
 
 		rf.mu.Unlock()
-		// TODO: need a more elegant way to start
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(TM_ElectionTimeout) // 5 times per second
 
 		// Commit Check
 		rf.mu.Lock()
