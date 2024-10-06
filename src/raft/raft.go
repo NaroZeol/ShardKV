@@ -618,8 +618,8 @@ func (rf *Raft) sendHeartBeat() {
 }
 
 func (rf *Raft) applyEntries() {
-	// TODO: fix data race
 	for !rf.killed() {
+		rf.mu.Lock()
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 			if rf.log[i].Type == LT_Normal {
 				applyMsg := ApplyMsg{
@@ -634,8 +634,9 @@ func (rf *Raft) applyEntries() {
 				log.Printf("[%v] apply entry #%v to state machine", rf.me, i)
 			}
 		}
+		rf.mu.Unlock()
 
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
