@@ -22,6 +22,7 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -178,6 +179,7 @@ type AppendEntriesReply struct {
 	Success      bool
 	PrevLogIndex int
 	PrevLogTerm  int
+	LastApplied  int
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
@@ -195,7 +197,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	lastLogTerm := rf.log[len(rf.log)-1].Term
 
 	if args.Term < rf.currentTerm {
-		log.Printf("[%v] refuse to vote for [%v] in term %v because of higher term %v\n", rf.me, args.CandiateId, args.Term, rf.currentTerm)
+		log.Printf("[%v] refuse to vote for [%v] in term %v because of more up-to-date entry %v\n", rf.me, args.CandiateId, args.Term, rf.currentTerm)
 		return
 	} else if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
@@ -221,7 +223,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		log.Printf("[%v] vote for [%v] in term %v\n", rf.me, args.CandiateId, args.Term)
 		return
 	} else {
-		log.Fatalf("[%v] reach unreachable\n", rf.me)
+		log.Fatalf("[%v] reach unreachable in Raft.RequestVote\n", rf.me)
 	}
 }
 
@@ -229,7 +231,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	log.Printf("[%v] receive AppendEntries from [%v] in term %v\n", rf.me, args.LeaderId, args.Term)
+	if len(args.Entries) != 0 {
+		log.Printf("[%v] receive AppendEntries from [%v] in term %v\n", rf.me, args.LeaderId, args.Term)
+	} else {
+		log.Printf("[%v] receive HeartBeat from [%v] in term %v\n", rf.me, args.LeaderId, args.Term)
+	}
 
 	// State Synchronization
 	if args.Term >= rf.currentTerm {
@@ -259,19 +265,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Log Synchronization
 	prevLogIndex := len(rf.log) - 1
 	prevLogTerm := rf.log[len(rf.log)-1].Term
+	lastApplied := rf.lastApplied
 
+	reply.PrevLogIndex = prevLogIndex
+	reply.PrevLogTerm = prevLogTerm
+	reply.LastApplied = lastApplied
 	// Good case
-	// Simply append
 	if prevLogIndex == args.PrevLogIndex && prevLogTerm == args.PrevLogTerm {
 		rf.log = append(rf.log, args.Entries...)
 		reply.Success = true
-		reply.PrevLogIndex = prevLogIndex
-		reply.PrevLogTerm = prevLogTerm
 
 		// set new commit index
 		if args.LeaderCommit > rf.commitIndex {
 			minIndex := 0
-			if args.LeaderCommit <= len(args.Entries)-1 {
+			if args.LeaderCommit <= len(rf.log)-1 {
 				minIndex = args.LeaderCommit
 			} else {
 				minIndex = len(rf.log) - 1
@@ -284,14 +291,43 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		return
 	}
+
+	// fix package from leader
+	// TODO: merge two success cases
+	if prevLogIndex > args.PrevLogIndex && args.PrevLogIndex == rf.lastApplied {
+		rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...) // left-closed and right-open interval for slice
+		reply.Success = true
+
+		// set new commit index
+		if args.LeaderCommit > rf.commitIndex {
+			minIndex := 0
+			if args.LeaderCommit <= len(rf.log)-1 {
+				minIndex = args.LeaderCommit
+			} else {
+				minIndex = len(rf.log) - 1
+			}
+			rf.commitIndex = minIndex
+		}
+
+		if len(args.Entries) != 0 { // ignore printing heart beat message
+			log.Printf("[%v] append entries from #%v to #%v", rf.me, prevLogIndex+1, len(rf.log)-1)
+		}
+		return
+	}
+
 	// Bad case
 	if prevLogIndex != args.PrevLogIndex || prevLogTerm != args.PrevLogTerm {
 		reply.Success = false
-		reply.PrevLogIndex = prevLogIndex
-		reply.PrevLogTerm = prevLogTerm
-		log.Printf("[%v] reject to append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries))
+		if len(args.Entries) != 0 { //ignore printing heart beat message
+			log.Printf("[%v] reject to append entries from #%v to #%v because of different index or term", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries))
+		}
 		return
 	}
+
+	// unreachable, for debug
+	log.Printf("args: %+v", *args)
+	log.Printf("prevLogIndex: %+v, prevLogTerm: %+v, lastApplied: %+v", prevLogIndex, prevLogTerm, lastApplied)
+	log.Fatalf("[%v] reach unreachable in Raft.AppendEntries", rf.me)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -528,8 +564,6 @@ func (rf *Raft) election() {
 			return
 		} else if rf.state == RS_Candiate && ballot >= len(rf.peers)/2+1 { // exceed half, success
 			rf.state = RS_Leader
-			rf.mu.Unlock()
-			log.Printf("\033[31m[%v] win the election in term %v\033[0m", rf.me, votedForTerm)
 			// Reinitialized after election
 			for i := range rf.nextIndex {
 				if i == rf.me {
@@ -538,8 +572,10 @@ func (rf *Raft) election() {
 				rf.nextIndex[i] = len(rf.log)
 				rf.matchIndex[i] = 0
 			}
+			rf.mu.Unlock()
+			log.Printf("\033[31m[%v] win the election in term %v\033[0m", rf.me, votedForTerm)
 			// TODO: merge two functions into single one?
-			go rf.sendHeartBeat()
+			// go rf.sendHeartBeat()
 			go rf.syncEntries()
 			return
 		}
@@ -651,48 +687,124 @@ func (rf *Raft) syncEntries() {
 			break
 		}
 
-		currentIndex := len(rf.log) - 1
+		// currentIndex := len(rf.log) - 1
 		for i := range rf.peers {
 			if i == rf.me {
 				continue
 			}
 
-			if currentIndex >= rf.nextIndex[i] {
+			// if currentIndex >= rf.nextIndex[i] {
+			if true {
 				args := AppendEntriesArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
-					PrevLogIndex: rf.nextIndex[i] - 1,            // Leader consider this follower's last log index
-					PrevLogTerm:  rf.log[rf.nextIndex[i]-1].Term, // Leader conside this follower's last log term
-					Entries:      rf.log[rf.nextIndex[i]:],
+					PrevLogIndex: rf.nextIndex[i] - 1,                                  // Leader consider this follower's last log index
+					PrevLogTerm:  rf.log[rf.nextIndex[i]-1].Term,                       // Leader conside this follower's last log term
+					Entries:      append([]logEntry(nil), rf.log[rf.nextIndex[i]:]...), // Deep copy to avoid data racing in Raft.AppendEntries()
 					LeaderCommit: rf.commitIndex,
 				}
 				newNextIndex := len(rf.log)
+				senderTerm := rf.currentTerm
 
 				go func(server int) {
-					ok := false
-					reply := AppendEntriesReply{}
-					for !rf.killed() && !ok {
-						ok = rf.sendAppendEntries(server, &args, &reply)
-					}
+					currArgs := args
+					currReply := AppendEntriesReply{}
+					for !rf.killed() {
+						ok := false
+						for !rf.killed() && !ok {
+							rf.mu.Lock()
+							if rf.state != RS_Leader || senderTerm != rf.currentTerm {
+								rf.mu.Unlock()
+								return // stop synchronization
+							}
+							rf.mu.Unlock()
 
-					if reply.Success {
+							ok = rf.sendAppendEntries(server, &currArgs, &currReply)
+						}
+
+						if currReply.Success {
+							rf.mu.Lock()
+							log.Printf("[%v] send entries to [%v] from #%v to #%v successfully", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
+							rf.nextIndex[server] = newNextIndex // apply success, update next index
+							rf.matchIndex[server] = newNextIndex - 1
+							rf.mu.Unlock()
+							return
+						}
+
 						rf.mu.Lock()
-						log.Printf("[%v] send entries to [%v] from #%v to #%v successfully", rf.me, server, rf.nextIndex[server], newNextIndex-1)
-						rf.nextIndex[server] = newNextIndex // apply success, update next index
-						rf.matchIndex[server] = newNextIndex - 1
-						rf.mu.Unlock()
-					}
+						// Case 0: higher term, no handle, handle by heart beat
+						if rf.currentTerm < currReply.Term {
+							rf.mu.Unlock()
+							return
+						}
+						// Case 1: same prevLogTerm, different prevLogIndex
+						// Case 2: different prevLogIndex, Leader has same prevLogTerm at prevLogIndex
+						if currReply.PrevLogTerm == currArgs.PrevLogTerm && currReply.PrevLogIndex != currArgs.PrevLogIndex ||
+							currReply.PrevLogIndex != currArgs.PrevLogIndex && currReply.PrevLogIndex < len(rf.log) && currReply.PrevLogTerm == rf.log[currReply.PrevLogIndex].Term {
+							currArgs = AppendEntriesArgs{
+								Term:         rf.currentTerm,
+								LeaderId:     rf.me,
+								PrevLogIndex: currReply.PrevLogIndex,
+								PrevLogTerm:  currReply.PrevLogTerm,
+								Entries:      append([]logEntry(nil), rf.log[currReply.PrevLogIndex+1:]...), // deep copy to avoid data racing in Raft.AppendEntries()
+								LeaderCommit: rf.commitIndex,
+							}
+							currReply = AppendEntriesReply{}
 
-					// TODO: failed?
-					if !reply.Success {
-						// log.Fatalf("[%v] no implementation", rf.me)
+							log.Printf("[%v] resend entries to [%v] from #%v to #%v", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
+							rf.mu.Unlock()
+							continue
+						}
+
+						// Case 3: reply lower prevLogIndex, but leader doesn't have same prevLogTerm at prevLogIndex
+						// e.g. :
+						// S0: 2 2 2
+						// S1: 2 2 3 3
+						// S2: 2 2 3
+						// when S1 send #4 to S0
+						// Case 4: replying with a higher PrevLogIndex than len(rf.log) but lower term -> fix Test (3B): rejoin of partitioned leader
+						// e.g. :
+						// S0: 2 2 2 2
+						// S1: 2 3 3
+						// S2: 2 3
+						// when S1 send #3 to S0
+						if currReply.PrevLogIndex < currArgs.PrevLogIndex && currReply.PrevLogTerm != rf.log[currReply.PrevLogIndex].Term ||
+							currReply.PrevLogIndex >= currArgs.PrevLogIndex && currReply.PrevLogTerm < currArgs.PrevLogTerm {
+							currArgs = AppendEntriesArgs{
+								Term:         rf.currentTerm,
+								LeaderId:     rf.me,
+								PrevLogIndex: currReply.LastApplied,
+								PrevLogTerm:  rf.log[currReply.LastApplied].Term,
+								Entries:      append([]logEntry(nil), rf.log[currReply.LastApplied+1:]...), // deep copy to avoid data racing in Raft.AppendEntries()
+								LeaderCommit: rf.commitIndex,
+							}
+							currReply = AppendEntriesReply{}
+
+							if !rf.killed() { // fix for strange output when a test is done
+								log.Printf("[%v] resend entries to [%v] from #%v to #%v", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
+							}
+							rf.mu.Unlock()
+							continue
+						}
+
+						// Fix for lab test, which does not shut down previous goroutines when start a new test
+						if currReply.Term == 0 {
+							rf.mu.Unlock()
+							return
+						}
+
+						// unreachable, for debug
+						log.Printf("currArgs: %+v", currArgs)
+						log.Printf("currReply: %+v", currReply)
+						log.Fatalf("[%v] reach unreachable in Raft.syncEntries", rf.me)
 					}
 				}(i)
 			}
 		}
 
 		rf.mu.Unlock()
-		time.Sleep(20 * time.Millisecond)
+		// TODO: need a more elegant way to start
+		time.Sleep(200 * time.Millisecond)
 
 		// Commit Check
 		rf.mu.Lock()
@@ -768,8 +880,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	// log.SetOutput(os.Stdout)
 	log.SetOutput(io.Discard)
+	log.SetOutput(os.Stdout)
 	log.Printf("[%v] start!!!!!\n", rf.me)
 	// start ticker goroutine to start elections
 	go rf.ticker()
