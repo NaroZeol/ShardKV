@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+	"io"
 	"log"
 	"math/rand"
 	"sync"
@@ -236,9 +237,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		rf.currentTerm = args.Term
 		rf.state = RS_Follower
-		// TODO: according to paper Figure 2,
-		// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-		rf.commitIndex = args.LeaderCommit
+		rf.lastHeartBeat = time.Now()
 		if formerState != RS_Follower {
 			log.Printf("[%v] turn to follower\n", rf.me)
 		}
@@ -257,30 +256,41 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
+	// Log Synchronization
 	prevLogIndex := len(rf.log) - 1
 	prevLogTerm := rf.log[len(rf.log)-1].Term
-	if len(args.Entries) != 0 && prevLogIndex == args.PrevLogIndex && prevLogTerm == args.PrevLogTerm {
-		rf.lastHeartBeat = time.Now()
-		for _, entry := range args.Entries {
-			if entry.Type == LT_Normal {
-				rf.log = append(rf.log, entry)
-				// log.Printf("[%v] append an entry", rf.me)
-			}
-		}
-		log.Printf("[%v] append entries from #%v to #%v", rf.me, prevLogIndex+1, len(rf.log)-1)
 
+	// Good case
+	// Simply append
+	if prevLogIndex == args.PrevLogIndex && prevLogTerm == args.PrevLogTerm {
+		rf.log = append(rf.log, args.Entries...)
 		reply.Success = true
 		reply.PrevLogIndex = prevLogIndex
 		reply.PrevLogTerm = prevLogTerm
+
+		// set new commit index
+		if args.LeaderCommit > rf.commitIndex {
+			minIndex := 0
+			if args.LeaderCommit <= len(args.Entries)-1 {
+				minIndex = args.LeaderCommit
+			} else {
+				minIndex = len(rf.log) - 1
+			}
+			rf.commitIndex = minIndex
+		}
+
+		if len(args.Entries) != 0 { // ignore printing heart beat message
+			log.Printf("[%v] append entries from #%v to #%v", rf.me, prevLogIndex+1, len(rf.log)-1)
+		}
 		return
 	}
-
-	if len(args.Entries) != 0 { // ignore heartbeat append failed
+	// Bad case
+	if prevLogIndex != args.PrevLogIndex || prevLogTerm != args.PrevLogTerm {
+		reply.Success = false
 		reply.PrevLogIndex = prevLogIndex
 		reply.PrevLogTerm = prevLogTerm
-		reply.Success = false
-		reply.Term = rf.currentTerm
-		log.Printf("[%v] refuce to accept AppendEntries from [%v] in term %v because of different log entry{index: %v, term: %v}", rf.me, args.LeaderId, args.Term, prevLogIndex, prevLogTerm)
+		log.Printf("[%v] reject to append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries))
+		return
 	}
 }
 
@@ -362,24 +372,24 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Unlock()
 
 	// Waiting for apply
-	for !rf.killed() {
-		rf.mu.Lock()
-		if rf.state != RS_Leader { // failed to apply
-			index = -1
-			term = -1
-			isLeader = false
-			rf.mu.Unlock()
-			return index, term, isLeader
-		}
-		lastApplied := rf.lastApplied
-		rf.mu.Unlock()
+	// for !rf.killed() {
+	// 	rf.mu.Lock()
+	// 	if rf.state != RS_Leader { // failed to apply
+	// 		index = -1
+	// 		term = -1
+	// 		isLeader = false
+	// 		rf.mu.Unlock()
+	// 		return index, term, isLeader
+	// 	}
+	// 	lastApplied := rf.lastApplied
+	// 	rf.mu.Unlock()
 
-		if lastApplied >= index {
-			break
-		} else {
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
+	// 	if lastApplied >= index {
+	// 		break
+	// 	} else {
+	// 		time.Sleep(20 * time.Millisecond)
+	// 	}
+	// }
 
 	return index, term, isLeader
 }
@@ -520,6 +530,15 @@ func (rf *Raft) election() {
 			rf.state = RS_Leader
 			rf.mu.Unlock()
 			log.Printf("\033[31m[%v] win the election in term %v\033[0m", rf.me, votedForTerm)
+			// Reinitialized after election
+			for i := range rf.nextIndex {
+				if i == rf.me {
+					continue
+				}
+				rf.nextIndex[i] = len(rf.log)
+				rf.matchIndex[i] = 0
+			}
+			// TODO: merge two functions into single one?
 			go rf.sendHeartBeat()
 			go rf.syncEntries()
 			return
@@ -644,6 +663,7 @@ func (rf *Raft) syncEntries() {
 					PrevLogIndex: rf.nextIndex[i] - 1,            // Leader consider this follower's last log index
 					PrevLogTerm:  rf.log[rf.nextIndex[i]-1].Term, // Leader conside this follower's last log term
 					Entries:      rf.log[rf.nextIndex[i]:],
+					LeaderCommit: rf.commitIndex,
 				}
 				newNextIndex := len(rf.log)
 
@@ -664,7 +684,7 @@ func (rf *Raft) syncEntries() {
 
 					// TODO: failed?
 					if !reply.Success {
-						log.Fatalln("no implementation")
+						// log.Fatalf("[%v] no implementation", rf.me)
 					}
 				}(i)
 			}
@@ -694,6 +714,9 @@ func (rf *Raft) syncEntries() {
 			N++
 		}
 		if rf.log[newCommitIndex].Term == rf.currentTerm {
+			if rf.commitIndex != newCommitIndex {
+				log.Printf("[%v] committed #%v", rf.me, newCommitIndex)
+			}
 			rf.commitIndex = newCommitIndex
 		}
 		rf.mu.Unlock()
@@ -744,6 +767,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	// log.SetOutput(os.Stdout)
+	log.SetOutput(io.Discard)
 	log.Printf("[%v] start!!!!!\n", rf.me)
 	// start ticker goroutine to start elections
 	go rf.ticker()
