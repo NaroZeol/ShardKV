@@ -287,7 +287,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 
 		if len(args.Entries) != 0 { // ignore printing heart beat message
-			log.Printf("[%v] append entries from #%v to #%v", rf.me, prevLogIndex+1, len(rf.log)-1)
+			log.Printf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, len(rf.log)-1)
 		}
 		return
 	}
@@ -310,7 +310,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 
 		if len(args.Entries) != 0 { // ignore printing heart beat message
-			log.Printf("[%v] append entries from #%v to #%v", rf.me, prevLogIndex+1, len(rf.log)-1)
+			log.Printf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, len(rf.log)-1)
 		}
 		return
 	}
@@ -747,9 +747,14 @@ func (rf *Raft) syncEntries() {
 
 		// Commit Check
 		rf.mu.Lock()
+		if rf.state != RS_Leader {
+			log.Printf("[%v] stop sync entries because it is not leader\n", rf.me)
+			rf.mu.Unlock()
+			break
+		}
 		N := rf.commitIndex // name from paper
 		newCommitIndex := N
-		for {
+		for newCommitIndex < len(rf.log) {
 			counter := 0
 			for _, index := range rf.matchIndex {
 				if index >= N {
@@ -765,7 +770,7 @@ func (rf *Raft) syncEntries() {
 
 			N++
 		}
-		if rf.log[newCommitIndex].Term == rf.currentTerm {
+		if newCommitIndex < len(rf.log) && rf.log[newCommitIndex].Term == rf.currentTerm {
 			if rf.commitIndex != newCommitIndex {
 				log.Printf("[%v] committed #%v", rf.me, newCommitIndex)
 			}
