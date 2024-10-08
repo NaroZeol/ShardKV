@@ -803,7 +803,7 @@ func (rf *Raft) syncEntries() {
 		}
 
 		rf.mu.Unlock()
-		time.Sleep(TM_ElectionTimeout) // 5 times per second
+		time.Sleep(TM_SyncInterval)
 
 		// Commit Check
 		rf.mu.Lock()
