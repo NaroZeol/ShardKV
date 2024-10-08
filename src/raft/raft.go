@@ -18,7 +18,7 @@ package raft
 //
 
 import (
-	//	"bytes"
+	"bytes"
 	"io"
 	"log"
 	"math/rand"
@@ -27,7 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 )
 
@@ -73,8 +73,8 @@ type Raft struct {
 	// Persistent state on all servers
 	state       raftState
 	currentTerm int
-	votedFor    *int
 	log         []logEntry
+	votedFor    *int
 
 	// Volatile state on all servers
 	commitIndex int
@@ -122,6 +122,20 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	e.Encode(rf.state)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.log)
+	if rf.votedFor == nil {
+		e.Encode(-1)
+	} else {
+		e.Encode(*rf.votedFor)
+	}
+
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
@@ -142,6 +156,37 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var _state raftState
+	var _currentTerm int
+	var _log []logEntry
+	var _votedFor *int
+
+	if d.Decode(&_state) != nil ||
+		d.Decode(&_currentTerm) != nil ||
+		d.Decode(&_log) != nil {
+		log.Printf("[%v] readPersist failed", rf.me)
+		return
+	}
+	var tmp int
+	if d.Decode(&tmp) != nil {
+		log.Printf("[%v] readPersist failed", rf.me)
+		return
+	}
+	if tmp == -1 {
+		_votedFor = nil
+	} else {
+		_votedFor = &tmp
+	}
+
+	rf.state = _state
+	rf.currentTerm = _currentTerm
+	rf.log = _log
+	rf.votedFor = _votedFor
+	log.Printf("[%v] readPersist succeed", rf.me)
 }
 
 // the service says it has created a snapshot that has
@@ -203,6 +248,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 		rf.votedFor = nil
 		rf.state = RS_Follower
+		rf.persist()
 
 		log.Printf("[%v] recieve a RequestVote with higher term, change its term to %v\n", rf.me, rf.currentTerm)
 	}
@@ -217,6 +263,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = &args.CandiateId
 		rf.lastHeartBeat = time.Now() // According to the paper, heart beat time should reset when voting to somebody
 		rf.state = RS_Follower
+		rf.persist()
 
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
@@ -243,6 +290,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		rf.currentTerm = args.Term
 		rf.state = RS_Follower
+		rf.persist()
 		rf.lastHeartBeat = time.Now()
 		if formerState != RS_Follower {
 			log.Printf("[%v] turn to follower\n", rf.me)
@@ -273,6 +321,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Good case
 	if prevLogIndex == args.PrevLogIndex && prevLogTerm == args.PrevLogTerm {
 		rf.log = append(rf.log, args.Entries...)
+		rf.persist()
 		reply.Success = true
 
 		// set new commit index
@@ -296,6 +345,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// TODO: merge two success cases
 	if prevLogIndex > args.PrevLogIndex && args.PrevLogIndex == rf.lastApplied {
 		rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...) // left-closed and right-open interval for slice
+		rf.persist()
 		reply.Success = true
 
 		// set new commit index
@@ -398,6 +448,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 	}
 	rf.log = append(rf.log, newLog)
+	rf.persist()
 	rf.nextIndex[rf.me] = len(rf.log)
 	rf.matchIndex[rf.me] = len(rf.log) - 1
 
@@ -459,6 +510,7 @@ func (rf *Raft) ticker() {
 		if rf.state != RS_Leader && time.Since(rf.lastHeartBeat) > TM_ElectionTimeout {
 			log.Printf("[%v] heart beat timeout\n", rf.me)
 			rf.state = RS_Candiate
+			rf.persist()
 			log.Printf("[%v] turn to candiate\n", rf.me)
 			// randomization
 			rf.mu.Unlock()
@@ -493,6 +545,7 @@ func (rf *Raft) election() {
 
 	rf.votedFor = &rf.me // vote for self
 	rf.currentTerm = rf.currentTerm + 1
+	rf.persist()
 	log.Printf("[%v] start an election in term %v\n", rf.me, rf.currentTerm)
 
 	args := RequestVoteArgs{
@@ -537,6 +590,7 @@ func (rf *Raft) election() {
 					rf.currentTerm = reply.Term
 					rf.state = RS_Follower
 					rf.votedFor = nil
+					rf.persist()
 					log.Printf("[%v] stop election because [%v] has higher term, turn to follower\n", votedForCandiate, num)
 					isCancel = true
 				}
@@ -564,6 +618,7 @@ func (rf *Raft) election() {
 			return
 		} else if rf.state == RS_Candiate && ballot >= len(rf.peers)/2+1 { // exceed half, success
 			rf.state = RS_Leader
+			rf.persist()
 			// Reinitialized after election
 			for i := range rf.nextIndex {
 				if i == rf.me {
@@ -656,7 +711,11 @@ func (rf *Raft) syncEntries() {
 
 						if currReply.Success {
 							rf.mu.Lock()
-							log.Printf("[%v] send entries to [%v] from #%v to #%v successfully", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
+							if len(currArgs.Entries) != 0 {
+								log.Printf("[%v] send entries to [%v] from #%v to #%v successfully", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
+							} else {
+								log.Printf("[%v] send HeartBeat to [%v] successfully", rf.me, server)
+							}
 							rf.nextIndex[server] = newNextIndex // apply success, update next index
 							rf.matchIndex[server] = newNextIndex - 1
 							rf.mu.Unlock()
@@ -671,15 +730,16 @@ func (rf *Raft) syncEntries() {
 								rf.state = RS_Follower
 								rf.votedFor = nil
 								rf.currentTerm = currReply.Term
+								rf.persist()
 								log.Printf("[%v] get a reply from higher term %v, turn to follower\n", rf.me, currReply.Term)
 								isCancel = true
 							}
 							rf.mu.Unlock()
 							return
 						}
-						// Case 1: same prevLogTerm, different prevLogIndex
+						// Case 1: same prevLogTerm, lower prevLogIndex
 						// Case 2: different prevLogIndex, Leader has same prevLogTerm at prevLogIndex
-						if currReply.PrevLogTerm == currArgs.PrevLogTerm && currReply.PrevLogIndex != currArgs.PrevLogIndex ||
+						if currReply.PrevLogTerm == currArgs.PrevLogTerm && currReply.PrevLogIndex < currArgs.PrevLogIndex ||
 							currReply.PrevLogIndex != currArgs.PrevLogIndex && currReply.PrevLogIndex < len(rf.log) && currReply.PrevLogTerm == rf.log[currReply.PrevLogIndex].Term {
 							currArgs = AppendEntriesArgs{
 								Term:         rf.currentTerm,
@@ -702,14 +762,14 @@ func (rf *Raft) syncEntries() {
 						// S1: 2 2 3 3
 						// S2: 2 2 3
 						// when S1 send #4 to S0
-						// Case 4: replying with a higher PrevLogIndex than len(rf.log) but lower term -> fix Test (3B): rejoin of partitioned leader
+						// Case 4: replying with a higher PrevLogIndex than len(rf.log)
 						// e.g. :
 						// S0: 2 2 2 2
 						// S1: 2 3 3
 						// S2: 2 3
 						// when S1 send #3 to S0
 						if currReply.PrevLogIndex < currArgs.PrevLogIndex && currReply.PrevLogTerm != rf.log[currReply.PrevLogIndex].Term ||
-							currReply.PrevLogIndex >= currArgs.PrevLogIndex && currReply.PrevLogTerm < currArgs.PrevLogTerm {
+							currReply.PrevLogIndex >= currArgs.PrevLogIndex {
 							currArgs = AppendEntriesArgs{
 								Term:         rf.currentTerm,
 								LeaderId:     rf.me,
@@ -807,6 +867,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		Command: "", // no-op
 	})
 
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
+
 	// Volatile state on all servers
 	rf.commitIndex = 0
 	rf.lastApplied = 0
@@ -820,9 +883,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.lastHeartBeat = time.Now()
 	rf.applyCh = applyCh
-
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
 
 	log.SetOutput(io.Discard)
 	log.SetOutput(os.Stdout)
