@@ -74,6 +74,7 @@ type Raft struct {
 	state       raftState
 	currentTerm int
 	log         []logEntry
+	indexOffset int
 	votedFor    *int
 
 	// Volatile state on all servers
@@ -89,6 +90,14 @@ type Raft struct {
 
 	// Apply
 	applyCh chan ApplyMsg
+}
+
+func (rf *Raft) localIndex(globalIndex int) int {
+	return globalIndex - rf.indexOffset
+}
+
+func (rf *Raft) globalLogLen() int {
+	return len(rf.log) + rf.indexOffset
 }
 
 // return currentTerm and whether this server
@@ -238,7 +247,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
 
-	lastLogIndex := len(rf.log)
+	lastLogIndex := rf.globalLogLen()
 	lastLogTerm := rf.log[len(rf.log)-1].Term
 
 	if args.Term < rf.currentTerm {
@@ -311,7 +320,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// Log Synchronization
-	prevLogIndex := len(rf.log) - 1
+	prevLogIndex := rf.globalLogLen() - 1
 	prevLogTerm := rf.log[len(rf.log)-1].Term
 	lastApplied := rf.lastApplied
 
@@ -327,16 +336,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// set new commit index
 		if args.LeaderCommit > rf.commitIndex {
 			minIndex := 0
-			if args.LeaderCommit <= len(rf.log)-1 {
+			if args.LeaderCommit <= rf.globalLogLen()-1 {
 				minIndex = args.LeaderCommit
 			} else {
-				minIndex = len(rf.log) - 1
+				minIndex = rf.globalLogLen() - 1
 			}
 			rf.commitIndex = minIndex
 		}
 
 		if len(args.Entries) != 0 { // ignore printing heart beat message
-			log.Printf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, len(rf.log)-1)
+			log.Printf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
 		}
 		return
 	}
@@ -344,23 +353,23 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// fix package from leader
 	// TODO: merge two success cases
 	if prevLogIndex > args.PrevLogIndex && args.PrevLogIndex == rf.lastApplied {
-		rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...) // left-closed and right-open interval for slice
+		rf.log = append(rf.log[:rf.localIndex(args.PrevLogIndex+1)], args.Entries...) // left-closed and right-open interval for slice
 		rf.persist()
 		reply.Success = true
 
 		// set new commit index
 		if args.LeaderCommit > rf.commitIndex {
 			minIndex := 0
-			if args.LeaderCommit <= len(rf.log)-1 {
+			if args.LeaderCommit <= rf.globalLogLen()-1 {
 				minIndex = args.LeaderCommit
 			} else {
-				minIndex = len(rf.log) - 1
+				minIndex = rf.globalLogLen() - 1
 			}
 			rf.commitIndex = minIndex
 		}
 
 		if len(args.Entries) != 0 { // ignore printing heart beat message
-			log.Printf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, len(rf.log)-1)
+			log.Printf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
 		}
 		return
 	}
@@ -449,10 +458,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.log = append(rf.log, newLog)
 	rf.persist()
-	rf.nextIndex[rf.me] = len(rf.log)
-	rf.matchIndex[rf.me] = len(rf.log) - 1
+	rf.nextIndex[rf.me] = rf.globalLogLen()
+	rf.matchIndex[rf.me] = rf.globalLogLen() - 1
 
-	index = len(rf.log) - 1
+	index = rf.globalLogLen() - 1
 	term = rf.currentTerm
 	isLeader = true
 	log.Printf("[%v] leader append entry #%v in its log", rf.me, index)
@@ -551,7 +560,7 @@ func (rf *Raft) election() {
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandiateId:   rf.me,
-		LastLogIndex: len(rf.log),
+		LastLogIndex: rf.globalLogLen(),
 		LastLogTerm:  rf.log[len(rf.log)-1].Term,
 	}
 
@@ -624,7 +633,7 @@ func (rf *Raft) election() {
 				if i == rf.me {
 					continue
 				}
-				rf.nextIndex[i] = len(rf.log)
+				rf.nextIndex[i] = rf.globalLogLen()
 				rf.matchIndex[i] = 0
 			}
 			rf.mu.Unlock()
@@ -644,10 +653,10 @@ func (rf *Raft) applyEntries() {
 	for !rf.killed() {
 		rf.mu.Lock()
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-			if i < len(rf.log) && rf.log[i].Type == LT_Normal {
+			if i < rf.globalLogLen() && rf.log[rf.localIndex(i)].Type == LT_Normal {
 				applyMsg := ApplyMsg{
 					CommandValid: true,
-					Command:      rf.log[i].Command,
+					Command:      rf.log[rf.localIndex(i)].Command,
 					CommandIndex: i,
 				}
 
@@ -681,16 +690,16 @@ func (rf *Raft) syncEntries() {
 			}
 
 			// if currentIndex >= rf.nextIndex[i] {
-			if true {
+			if true { // haha, this if true is useless
 				args := AppendEntriesArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
-					PrevLogIndex: rf.nextIndex[i] - 1,                                  // Leader consider this follower's last log index
-					PrevLogTerm:  rf.log[rf.nextIndex[i]-1].Term,                       // Leader conside this follower's last log term
-					Entries:      append([]logEntry(nil), rf.log[rf.nextIndex[i]:]...), // Deep copy to avoid data racing in Raft.AppendEntries()
+					PrevLogIndex: rf.nextIndex[i] - 1,                                                 // Leader consider this follower's last log index
+					PrevLogTerm:  rf.log[rf.localIndex(rf.nextIndex[i]-1)].Term,                       // Leader conside this follower's last log term
+					Entries:      append([]logEntry(nil), rf.log[rf.localIndex(rf.nextIndex[i]):]...), // Deep copy to avoid data racing in Raft.AppendEntries()
 					LeaderCommit: rf.commitIndex,
 				}
-				newNextIndex := len(rf.log)
+				newNextIndex := rf.globalLogLen()
 				senderTerm := rf.currentTerm
 
 				go func(server int) {
@@ -740,13 +749,13 @@ func (rf *Raft) syncEntries() {
 						// Case 1: same prevLogTerm, lower prevLogIndex
 						// Case 2: different prevLogIndex, Leader has same prevLogTerm at prevLogIndex
 						if currReply.PrevLogTerm == currArgs.PrevLogTerm && currReply.PrevLogIndex < currArgs.PrevLogIndex ||
-							currReply.PrevLogIndex != currArgs.PrevLogIndex && currReply.PrevLogIndex < len(rf.log) && currReply.PrevLogTerm == rf.log[currReply.PrevLogIndex].Term {
+							currReply.PrevLogIndex != currArgs.PrevLogIndex && currReply.PrevLogIndex < rf.globalLogLen() && currReply.PrevLogTerm == rf.log[rf.localIndex(currReply.PrevLogIndex)].Term {
 							currArgs = AppendEntriesArgs{
 								Term:         rf.currentTerm,
 								LeaderId:     rf.me,
 								PrevLogIndex: currReply.PrevLogIndex,
 								PrevLogTerm:  currReply.PrevLogTerm,
-								Entries:      append([]logEntry(nil), rf.log[currReply.PrevLogIndex+1:]...), // deep copy to avoid data racing in Raft.AppendEntries()
+								Entries:      append([]logEntry(nil), rf.log[rf.localIndex(currReply.PrevLogIndex+1):]...), // deep copy to avoid data racing in Raft.AppendEntries()
 								LeaderCommit: rf.commitIndex,
 							}
 							currReply = AppendEntriesReply{}
@@ -768,14 +777,14 @@ func (rf *Raft) syncEntries() {
 						// S1: 2 3 3
 						// S2: 2 3
 						// when S1 send #3 to S0
-						if currReply.PrevLogIndex < currArgs.PrevLogIndex && currReply.PrevLogTerm != rf.log[currReply.PrevLogIndex].Term ||
+						if currReply.PrevLogIndex < currArgs.PrevLogIndex && currReply.PrevLogTerm != rf.log[rf.localIndex(currReply.PrevLogIndex)].Term ||
 							currReply.PrevLogIndex >= currArgs.PrevLogIndex {
 							currArgs = AppendEntriesArgs{
 								Term:         rf.currentTerm,
 								LeaderId:     rf.me,
 								PrevLogIndex: currReply.LastApplied,
-								PrevLogTerm:  rf.log[currReply.LastApplied].Term,
-								Entries:      append([]logEntry(nil), rf.log[currReply.LastApplied+1:]...), // deep copy to avoid data racing in Raft.AppendEntries()
+								PrevLogTerm:  rf.log[rf.localIndex(currReply.LastApplied)].Term,
+								Entries:      append([]logEntry(nil), rf.log[rf.localIndex(currReply.LastApplied+1):]...), // deep copy to avoid data racing in Raft.AppendEntries()
 								LeaderCommit: rf.commitIndex,
 							}
 							currReply = AppendEntriesReply{}
@@ -814,7 +823,7 @@ func (rf *Raft) syncEntries() {
 		}
 		N := rf.commitIndex // name from paper
 		newCommitIndex := N
-		for newCommitIndex < len(rf.log) {
+		for newCommitIndex < rf.globalLogLen() {
 			counter := 0
 			for _, index := range rf.matchIndex {
 				if index >= N {
@@ -830,7 +839,7 @@ func (rf *Raft) syncEntries() {
 
 			N++
 		}
-		if newCommitIndex < len(rf.log) && rf.log[newCommitIndex].Term == rf.currentTerm {
+		if newCommitIndex < rf.globalLogLen() && rf.log[rf.localIndex(newCommitIndex)].Term == rf.currentTerm {
 			if rf.commitIndex != newCommitIndex {
 				log.Printf("[%v] committed #%v", rf.me, newCommitIndex)
 			}
@@ -877,15 +886,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Volatile state on leaders
 	rf.nextIndex = make([]int, len(peers))
 	for i := range rf.nextIndex {
-		rf.nextIndex[i] = len(rf.log) // initialized to leader last log index + 1 (Figure 2)
+		rf.nextIndex[i] = rf.globalLogLen() // initialized to leader last log index + 1 (Figure 2)
 	}
 	rf.matchIndex = make([]int, len(peers))
 
 	rf.lastHeartBeat = time.Now()
 	rf.applyCh = applyCh
 
-	log.SetOutput(io.Discard)
 	log.SetOutput(os.Stdout)
+	log.SetOutput(io.Discard)
 	log.Printf("[%v] start!!!!!\n", rf.me)
 	// start ticker goroutine to start elections
 	go rf.ticker()
