@@ -212,7 +212,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.log = rf.log[rf.localIndex(index):]
 	rf.snapshot = snapshot
 	rf.snapshotIndex = index // index is a global index
-	rf.snapshotTerm = rf.currentTerm
+	rf.snapshotTerm = rf.log[rf.localIndex(index)].Term
 	rf.persist()
 	log.Printf("[%v] create snapshot from #%v to #%v successfully", rf.me, beforeSnapshotIndex+1, index)
 }
@@ -286,7 +286,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	isUpToDate := (args.LastLogTerm > lastLogTerm) || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)
 	if !isUpToDate {
-		log.Printf("[%v] refuse to vote for [%v] in term %v because of higher log entries\n", rf.me, args.CandiateId, args.Term)
+		log.Printf("[%v] refuse to vote for [%v] in term %v because of more up-to-date log entry\n", rf.me, args.CandiateId, args.Term)
 	} else if rf.votedFor != nil && *rf.votedFor != args.CandiateId {
 		log.Printf("[%v] refuse to vote for [%v] in term %v because it has voted for [%v]", rf.me, args.CandiateId, args.Term, *rf.votedFor)
 	} else if (rf.votedFor == nil || *rf.votedFor == args.CandiateId) && isUpToDate {
@@ -373,7 +373,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// fix package from leader
-	// TODO: merge two success cases
 	if prevLogIndex > args.PrevLogIndex && args.PrevLogIndex == rf.lastApplied {
 		rf.log = append(rf.log[:rf.localIndex(args.PrevLogIndex+1)], args.Entries...) // left-closed and right-open interval for slice
 		rf.persist()
@@ -400,7 +399,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if prevLogIndex != args.PrevLogIndex || prevLogTerm != args.PrevLogTerm {
 		reply.Success = false
 		if len(args.Entries) != 0 { //ignore printing heart beat message
-			log.Printf("[%v] reject to append entries from #%v to #%v because of different index or term", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries))
+			log.Printf("[%v] reject to append entries from #%v to #%v with different index #%v or term %v", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries), prevLogIndex, prevLogTerm)
 		}
 		return
 	}
@@ -545,26 +544,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader = true
 	log.Printf("[%v] leader append entry #%v in its log", rf.me, index)
 	rf.mu.Unlock()
-
-	// Waiting for apply
-	// for !rf.killed() {
-	// 	rf.mu.Lock()
-	// 	if rf.state != RS_Leader { // failed to apply
-	// 		index = -1
-	// 		term = -1
-	// 		isLeader = false
-	// 		rf.mu.Unlock()
-	// 		return index, term, isLeader
-	// 	}
-	// 	lastApplied := rf.lastApplied
-	// 	rf.mu.Unlock()
-
-	// 	if lastApplied >= index {
-	// 		break
-	// 	} else {
-	// 		time.Sleep(20 * time.Millisecond)
-	// 	}
-	// }
 
 	return index, term, isLeader
 }
@@ -717,9 +696,8 @@ func (rf *Raft) election() {
 			}
 			rf.mu.Unlock()
 			log.Printf("\033[31m[%v] win the election in term %v\033[0m", rf.me, votedForTerm)
-			// TODO: merge two functions into single one?
-			// go rf.sendHeartBeat()
-			go rf.syncEntries()
+			// go rf.syncEntries()
+			go rf.serveAsLeader()
 			return
 		}
 		rf.mu.Unlock()
@@ -736,7 +714,7 @@ func (rf *Raft) applyEntries() {
 				applyMsg := ApplyMsg{
 					CommandValid:  true,
 					Command:       rf.log[rf.localIndex(i)].Command,
-					CommandIndex:  i,
+					CommandIndex:  int(i),
 					SnapshotValid: false,
 				}
 
@@ -745,13 +723,14 @@ func (rf *Raft) applyEntries() {
 				rf.mu.Lock()
 				rf.lastApplied = i
 
-				log.Printf("[%v] apply entry #%v to state machine", rf.me, i)
+				log.Printf("[%v] apply entry #%v to state machine", rf.me, rf.lastApplied)
 			}
 		}
 		rf.mu.Unlock()
 
 		time.Sleep(20 * time.Millisecond)
 	}
+	log.Printf("[%v] stop applyEntries because of death", rf.me)
 }
 
 func (rf *Raft) syncEntries() {
@@ -771,184 +750,184 @@ func (rf *Raft) syncEntries() {
 				continue
 			}
 
-			// if currentIndex >= rf.nextIndex[i] {
-			if true { // haha, this if true is useless
+			// fix for snapshot
+			realNextIndex := rf.nextIndex[i]
+			if rf.nextIndex[i] < rf.globalIndex(1) {
+				realNextIndex = rf.globalIndex(1)
+			}
 
-				// fix for snapshot
-				realNextIndex := rf.nextIndex[i]
-				if rf.nextIndex[i] < rf.globalIndex(1) {
-					realNextIndex = rf.globalIndex(1)
-				}
+			args := AppendEntriesArgs{
+				Term:         rf.currentTerm,
+				LeaderId:     rf.me,
+				PrevLogIndex: realNextIndex - 1,                                                 // Leader consider this follower's last log index
+				PrevLogTerm:  rf.log[rf.localIndex(realNextIndex-1)].Term,                       // Leader conside this follower's last log term
+				Entries:      append([]logEntry(nil), rf.log[rf.localIndex(realNextIndex):]...), // Deep copy to avoid data racing in Raft.AppendEntries()
+				LeaderCommit: rf.commitIndex,
+			}
 
-				args := AppendEntriesArgs{
-					Term:         rf.currentTerm,
-					LeaderId:     rf.me,
-					PrevLogIndex: realNextIndex - 1,                                                 // Leader consider this follower's last log index
-					PrevLogTerm:  rf.log[rf.localIndex(realNextIndex-1)].Term,                       // Leader conside this follower's last log term
-					Entries:      append([]logEntry(nil), rf.log[rf.localIndex(realNextIndex):]...), // Deep copy to avoid data racing in Raft.AppendEntries()
-					LeaderCommit: rf.commitIndex,
-				}
+			newNextIndex := rf.globalLogLen()
+			senderTerm := rf.currentTerm
 
-				newNextIndex := rf.globalLogLen()
-				senderTerm := rf.currentTerm
+			go func(server int) {
+				currArgs := args
+				currReply := AppendEntriesReply{}
 
-				go func(server int) {
-					currArgs := args
-					currReply := AppendEntriesReply{}
+				for !rf.killed() {
+					ok := rf.sendAppendEntries(server, &currArgs, &currReply)
+					if !ok {
+						// log.Printf("[%v] failed to send AppendEntries to [%v] due to RPC error", rf.me, server)
+						return // for some reasons, RPC failed(e.g. network error), let's do it next round
+					} //else {
+					// 	// log.Printf("[%v] send RPC to [%v] successfully", rf.me, server)
+					// }
 
-					for !rf.killed() {
-						ok := rf.sendAppendEntries(server, &currArgs, &currReply)
+					rf.mu.Lock()
+					if currReply.Success {
+						if len(currArgs.Entries) != 0 {
+							log.Printf("[%v] send entries to [%v] from #%v to #%v successfully", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
+						} else {
+							log.Printf("[%v] send HeartBeat to [%v] successfully", rf.me, server)
+						}
+						rf.nextIndex[server] = newNextIndex // apply success, update next index
+						rf.matchIndex[server] = newNextIndex - 1
+						rf.mu.Unlock()
+						return
+					}
+
+					// Case 0: higher term, turn to follower
+					if senderTerm < currReply.Term {
+						// Cancel only once
+						if !isCancel {
+							rf.state = RS_Follower
+							rf.votedFor = nil
+							rf.currentTerm = currReply.Term
+							rf.persist()
+							log.Printf("[%v] get a reply from higher term %v, turn to follower\n", rf.me, currReply.Term)
+							isCancel = true
+						}
+						rf.mu.Unlock()
+						return
+					}
+
+					// Case 1: same prevLogTerm, lower prevLogIndex
+					// Case 2: different prevLogIndex, Leader has same prevLogTerm at prevLogIndex
+					if rf.localIndex(currReply.PrevLogIndex+1) > 0 &&
+						(currReply.PrevLogTerm == currArgs.PrevLogTerm && currReply.PrevLogIndex < currArgs.PrevLogIndex ||
+							currReply.PrevLogIndex != currArgs.PrevLogIndex && currReply.PrevLogIndex < rf.globalLogLen() && currReply.PrevLogTerm == rf.log[rf.localIndex(currReply.PrevLogIndex)].Term) {
+						currArgs = AppendEntriesArgs{
+							Term:         rf.currentTerm,
+							LeaderId:     rf.me,
+							PrevLogIndex: currReply.PrevLogIndex,
+							PrevLogTerm:  currReply.PrevLogTerm,
+							Entries:      append([]logEntry(nil), rf.log[rf.localIndex(currReply.PrevLogIndex+1):]...), // deep copy to avoid data racing in Raft.AppendEntries()
+							LeaderCommit: rf.commitIndex,
+						}
+						currReply = AppendEntriesReply{}
+
+						log.Printf("[%v] resend entries to [%v] from #%v to #%v", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
+						rf.mu.Unlock()
+						continue
+					}
+
+					// Case 3: reply lower prevLogIndex, but leader doesn't have same prevLogTerm at prevLogIndex
+					// e.g. :
+					// S0: 2 2 2
+					// S1: 2 2 3 3
+					// S2: 2 2 3
+					// when S1 send #4 to S0
+					// Case 4: replying with a higher PrevLogIndex than len(rf.log)
+					// e.g. :
+					// S0: 2 2 2 2
+					// S1: 2 3 3
+					// S2: 2 3
+					// when S1 send #3 to S0
+					if rf.localIndex(currReply.LastApplied+1) > 0 &&
+						(currReply.PrevLogIndex < currArgs.PrevLogIndex && currReply.PrevLogTerm != rf.log[rf.localIndex(currReply.PrevLogIndex)].Term ||
+							currReply.PrevLogIndex >= currArgs.PrevLogIndex) {
+						currArgs = AppendEntriesArgs{
+							Term:         rf.currentTerm,
+							LeaderId:     rf.me,
+							PrevLogIndex: currReply.LastApplied,
+							PrevLogTerm:  rf.log[rf.localIndex(currReply.LastApplied)].Term,
+							Entries:      append([]logEntry(nil), rf.log[rf.localIndex(currReply.LastApplied+1):]...), // deep copy to avoid data racing in Raft.AppendEntries()
+							LeaderCommit: rf.commitIndex,
+						}
+						currReply = AppendEntriesReply{}
+
+						if !rf.killed() { // fix for strange output when a test is done
+							log.Printf("[%v] resend entries to [%v] from #%v to #%v", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
+						}
+						rf.mu.Unlock()
+						continue
+					}
+
+					// Case 5: entries which are needed to send to servers are only existed in snapshot
+					if rf.localIndex(currReply.PrevLogIndex+1) <= 0 || rf.localIndex(currReply.LastApplied+1) <= 0 {
+						snapshotArgs := InstallSnapshotArgs{
+							Term:              rf.currentTerm,
+							LeaderId:          rf.me,
+							LastIncludedIndex: rf.snapshotIndex,
+							LastIncludedTerm:  rf.snapshotTerm,
+							Data:              rf.snapshot,
+						}
+						snapshotReply := InstallSnapshotReply{}
+
+						log.Printf("[%v] try to send InstallSnapshot to [%v]", rf.me, server)
+						rf.mu.Unlock()
+
+						ok := rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
 						if !ok {
-							// log.Printf("[%v] failed to send AppendEntries to [%v] due to RPC error", rf.me, server)
-							return // for some reasons, RPC failed(e.g. network error), let's do it next round
-						} //else {
-						// 	// log.Printf("[%v] send RPC to [%v] successfully", rf.me, server)
-						// }
-
-						rf.mu.Lock()
-						if currReply.Success {
-							if len(currArgs.Entries) != 0 {
-								log.Printf("[%v] send entries to [%v] from #%v to #%v successfully", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
-							} else {
-								log.Printf("[%v] send HeartBeat to [%v] successfully", rf.me, server)
-							}
-							rf.nextIndex[server] = newNextIndex // apply success, update next index
-							rf.matchIndex[server] = newNextIndex - 1
-							rf.mu.Unlock()
+							log.Printf("[%v] send InstallSnapshot RPC failed", rf.me)
 							return
+						} else {
+							log.Printf("[%v] send InstallSnapshot RPC succeed", rf.me)
 						}
 
-						// Case 0: higher term, turn to follower
-						if senderTerm < currReply.Term {
-							// Cancel only once
+						rf.mu.Lock()
+						if senderTerm < snapshotReply.Term {
 							if !isCancel {
 								rf.state = RS_Follower
 								rf.votedFor = nil
-								rf.currentTerm = currReply.Term
+								rf.currentTerm = snapshotReply.Term
 								rf.persist()
-								log.Printf("[%v] get a reply from higher term %v, turn to follower\n", rf.me, currReply.Term)
+								log.Printf("[%v] InstallSnapshot but get a reply from higher term %v, turn to follower\n", rf.me, snapshotReply.Term)
 								isCancel = true
 							}
 							rf.mu.Unlock()
 							return
 						}
+						rf.mu.Unlock()
 
-						// Case 1: same prevLogTerm, lower prevLogIndex
-						// Case 2: different prevLogIndex, Leader has same prevLogTerm at prevLogIndex
-						if rf.localIndex(currReply.PrevLogIndex+1) > 0 &&
-							(currReply.PrevLogTerm == currArgs.PrevLogTerm && currReply.PrevLogIndex < currArgs.PrevLogIndex ||
-								currReply.PrevLogIndex != currArgs.PrevLogIndex && currReply.PrevLogIndex < rf.globalLogLen() && currReply.PrevLogTerm == rf.log[rf.localIndex(currReply.PrevLogIndex)].Term) {
-							currArgs = AppendEntriesArgs{
-								Term:         rf.currentTerm,
-								LeaderId:     rf.me,
-								PrevLogIndex: currReply.PrevLogIndex,
-								PrevLogTerm:  currReply.PrevLogTerm,
-								Entries:      append([]logEntry(nil), rf.log[rf.localIndex(currReply.PrevLogIndex+1):]...), // deep copy to avoid data racing in Raft.AppendEntries()
-								LeaderCommit: rf.commitIndex,
-							}
-							currReply = AppendEntriesReply{}
-
-							log.Printf("[%v] resend entries to [%v] from #%v to #%v", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
-							rf.mu.Unlock()
-							continue
-						}
-
-						// Case 3: reply lower prevLogIndex, but leader doesn't have same prevLogTerm at prevLogIndex
-						// e.g. :
-						// S0: 2 2 2
-						// S1: 2 2 3 3
-						// S2: 2 2 3
-						// when S1 send #4 to S0
-						// Case 4: replying with a higher PrevLogIndex than len(rf.log)
-						// e.g. :
-						// S0: 2 2 2 2
-						// S1: 2 3 3
-						// S2: 2 3
-						// when S1 send #3 to S0
-						if rf.localIndex(currReply.LastApplied+1) > 0 &&
-							(currReply.PrevLogIndex < currArgs.PrevLogIndex && currReply.PrevLogTerm != rf.log[rf.localIndex(currReply.PrevLogIndex)].Term ||
-								currReply.PrevLogIndex >= currArgs.PrevLogIndex) {
-							currArgs = AppendEntriesArgs{
-								Term:         rf.currentTerm,
-								LeaderId:     rf.me,
-								PrevLogIndex: currReply.LastApplied,
-								PrevLogTerm:  rf.log[rf.localIndex(currReply.LastApplied)].Term,
-								Entries:      append([]logEntry(nil), rf.log[rf.localIndex(currReply.LastApplied+1):]...), // deep copy to avoid data racing in Raft.AppendEntries()
-								LeaderCommit: rf.commitIndex,
-							}
-							currReply = AppendEntriesReply{}
-
-							if !rf.killed() { // fix for strange output when a test is done
-								log.Printf("[%v] resend entries to [%v] from #%v to #%v", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
-							}
-							rf.mu.Unlock()
-							continue
-						}
-
-						// Case 5: entries which are needed to send to servers are only existed in snapshot
-						if rf.localIndex(currReply.PrevLogIndex+1) <= 0 || rf.localIndex(currReply.LastApplied+1) <= 0 {
-							snapshotArgs := InstallSnapshotArgs{
-								Term:              rf.currentTerm,
-								LeaderId:          rf.me,
-								LastIncludedIndex: rf.snapshotIndex,
-								LastIncludedTerm:  rf.snapshotTerm,
-								Data:              rf.snapshot,
-							}
-							snapshotReply := InstallSnapshotReply{}
-
-							log.Printf("[%v] try to send InstallSnapshot to [%v]", rf.me, server)
-							rf.mu.Unlock()
-
-							ok := rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
-							if !ok {
-								log.Printf("[%v] send InstallSnapshot RPC failed", rf.me)
-								return
-							} else {
-								log.Printf("[%v] send InstallSnapshot RPC succeed", rf.me)
-							}
-
-							rf.mu.Lock()
-							if senderTerm < snapshotReply.Term {
-								if !isCancel {
-									rf.state = RS_Follower
-									rf.votedFor = nil
-									rf.currentTerm = snapshotReply.Term
-									rf.persist()
-									log.Printf("[%v] InstallSnapshot but get a reply from higher term %v, turn to follower\n", rf.me, snapshotReply.Term)
-									isCancel = true
-								}
-								rf.mu.Unlock()
-								return
-							}
-							rf.mu.Unlock()
-
-							log.Printf("[%v] send InstallSnapshot to [%v] successfully", rf.me, server)
-							currReply = AppendEntriesReply{}
-							continue // Retry
-						}
-
-						// Fix for lab test, which does not shut down previous goroutines when start a new test
-						if currReply.Term == 0 {
-							rf.mu.Unlock()
-							return
-						}
-
-						// unreachable, for debug
-						log.Printf("currArgs: %+v", currArgs)
-						log.Printf("currReply: %+v", currReply)
-						log.Fatalf("[%v] reach unreachable in Raft.syncEntries", rf.me)
+						log.Printf("[%v] send InstallSnapshot to [%v] successfully", rf.me, server)
+						currReply = AppendEntriesReply{}
+						continue // Retry
 					}
-				}(i)
-			}
+
+					// Fix for lab test, which does not shut down previous goroutines when start a new test
+					if currReply.Term == 0 {
+						rf.mu.Unlock()
+						return
+					}
+
+					// unreachable, for debug
+					log.Printf("currArgs: %+v", currArgs)
+					log.Printf("currReply: %+v", currReply)
+					log.Fatalf("[%v] reach unreachable in Raft.syncEntries", rf.me)
+				}
+			}(i)
 		}
 
 		rf.mu.Unlock()
 		time.Sleep(TM_SyncInterval)
+	}
+}
 
-		// Commit Check
+func (rf *Raft) commitCheck() {
+	// Commit Check
+	for !rf.killed() {
 		rf.mu.Lock()
 		if rf.state != RS_Leader {
-			log.Printf("[%v] stop sync entries because it is not leader\n", rf.me)
+			log.Printf("[%v] stop commitCheck because it is not leader\n", rf.me)
 			rf.mu.Unlock()
 			break
 		}
@@ -977,8 +956,13 @@ func (rf *Raft) syncEntries() {
 			rf.commitIndex = newCommitIndex
 		}
 		rf.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
 	}
-	log.Printf("[%v] stop syncEntries because of death", rf.me)
+}
+
+func (rf *Raft) serveAsLeader() {
+	go rf.syncEntries()
+	go rf.commitCheck()
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -1013,6 +997,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 
 	// initialize from state persisted before a crash
+	rf.snapshot = make([]byte, 0)
 	rf.readPersist(persister.ReadRaftState())
 	if len(rf.snapshot) != 0 {
 		// ********VERY VERY IMPORTANT!!!!!!!!!!!!!!!!!!!!!!!!!*******
@@ -1023,6 +1008,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		// Took me about 3 hours to find this problem
 		go func() {
 			log.Printf("[%v] try to rebuild state machine from snapshot", rf.me)
+			rf.mu.Lock() // other goroutines can run only after rebuilding state machine is finished
 			applyCh <- ApplyMsg{
 				CommandValid:  false,
 				SnapshotValid: true,
@@ -1030,16 +1016,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				SnapshotTerm:  rf.snapshotTerm,
 				SnapshotIndex: rf.snapshotIndex,
 			}
-			rf.mu.Lock()
 			rf.commitIndex = rf.snapshotIndex
 			rf.lastApplied = rf.snapshotIndex
+			rf.log[0].Term = rf.snapshotTerm
 			rf.mu.Unlock()
 
 			log.Printf("[%v] rebuild state machine from snapshot", rf.me)
 		}()
 	}
-	// fix for test-3D crash, force a start machine turn to follower
-	rf.state = RS_Follower
 
 	// Volatile state on leaders
 	rf.nextIndex = make([]int, len(peers))
@@ -1058,6 +1042,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.ticker()
 	// start applyEntries goroutine to apply committed entries
 	go rf.applyEntries()
+
+	if rf.state == RS_Leader {
+		go rf.serveAsLeader()
+	}
 
 	return rf
 }
