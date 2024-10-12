@@ -1030,8 +1030,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				SnapshotTerm:  rf.snapshotTerm,
 				SnapshotIndex: rf.snapshotIndex,
 			}
+			rf.mu.Lock()
 			rf.commitIndex = rf.snapshotIndex
 			rf.lastApplied = rf.snapshotIndex
+			rf.mu.Unlock()
 
 			log.Printf("[%v] rebuild state machine from snapshot", rf.me)
 		}()
