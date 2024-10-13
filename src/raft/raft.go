@@ -312,7 +312,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if len(args.Entries) != 0 {
 		log.Printf("[%v] receive AppendEntries from [%v] in term %v\n", rf.me, args.LeaderId, args.Term)
 	} else {
-		log.Printf("[%v] receive HeartBeat from [%v] in term %v\n", rf.me, args.LeaderId, args.Term)
+		// log.Printf("[%v] receive HeartBeat from [%v] in term %v\n", rf.me, args.LeaderId, args.Term)
 	}
 
 	// State Synchronization
@@ -425,6 +425,10 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 	if args.LastIncludedIndex < rf.snapshotIndex {
 		log.Printf("[%v] refuse to install snapshot because of more up-to-date snapshot", rf.me)
+		return
+	}
+	if args.LastIncludedIndex == rf.snapshotIndex {
+		log.Printf("[%v] refuce to install snapshot because of same up-to-date snapshot", rf.me)
 		return
 	}
 
@@ -569,39 +573,27 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for !rf.killed() {
-		// Your code here (3A)
-		// Check if a leader election should be started.
 		rf.mu.Lock()
 
 		// Heart beat timeout
 		if rf.state != RS_Leader && time.Since(rf.lastHeartBeat) > TM_ElectionTimeout {
-			log.Printf("[%v] heart beat timeout\n", rf.me)
+			// log.Printf("[%v] heart beat timeout\n", rf.me)
 			rf.state = RS_Candiate
+			rf.lastHeartBeat = time.Now() // reset election timer
 			rf.persist()
-			log.Printf("[%v] turn to candiate\n", rf.me)
-			// randomization
-			rf.mu.Unlock()
-			ms := (rand.Int63() % int64(TM_RandomWaitingTime))
-			time.Sleep(time.Duration(ms))
-			rf.mu.Lock()
 
 			// Start an election, if other one win the election, state will not be Candiate
 			// or voting to someone that reset heartbeat time
-			if rf.state != RS_Candiate || time.Since(rf.lastHeartBeat) < TM_ElectionTimeout {
-				rf.mu.Unlock()
-			} else {
-				rf.lastHeartBeat = time.Now() // reset election timer
-				rf.mu.Unlock()
-				go rf.election()
-			}
+			rf.mu.Unlock()
+			go rf.election()
 		} else {
 			rf.mu.Unlock()
 		}
 
-		// pause for a random amount of time between 50 and 350
+		// pause for a random amount of time
 		// milliseconds.
-		ms := 50 //+ (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+		ms := (rand.Int63() % int64(TM_RandomWaitingTime))
+		time.Sleep(time.Duration(ms))
 	}
 }
 
@@ -709,26 +701,35 @@ func (rf *Raft) election() {
 func (rf *Raft) applyEntries() {
 	for !rf.killed() {
 		rf.mu.Lock()
-		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-			if i < rf.globalLogLen() && rf.localIndex(i) > 0 && rf.log[rf.localIndex(i)].Type == LT_Normal {
+		for {
+			i := rf.lastApplied + 1
+			if i <= rf.commitIndex && i < rf.globalLogLen() && rf.localIndex(i) > 0 && rf.log[rf.localIndex(i)].Type == LT_Normal {
 				applyMsg := ApplyMsg{
 					CommandValid:  true,
 					Command:       rf.log[rf.localIndex(i)].Command,
-					CommandIndex:  int(i),
+					CommandIndex:  rf.lastApplied + 1,
 					SnapshotValid: false,
 				}
 
+				// no lock to protect, fix for crash test
+				// which applyCh will refuse to accept applyMsg when calling Snapshot
+				// which make program choke if sending message across channel while holding the lock
 				rf.mu.Unlock()
 				rf.applyCh <- applyMsg
+
 				rf.mu.Lock()
-				rf.lastApplied = i
+				if i == rf.lastApplied+1 { // if InstallSnapshot change the rf.lastApplied, ignore update
+					rf.lastApplied = i
+				}
 
 				log.Printf("[%v] apply entry #%v to state machine", rf.me, rf.lastApplied)
+			} else {
+				break
 			}
 		}
 		rf.mu.Unlock()
 
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(30 * time.Millisecond)
 	}
 	log.Printf("[%v] stop applyEntries because of death", rf.me)
 }
@@ -786,7 +787,7 @@ func (rf *Raft) syncEntries() {
 						if len(currArgs.Entries) != 0 {
 							log.Printf("[%v] send entries to [%v] from #%v to #%v successfully", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
 						} else {
-							log.Printf("[%v] send HeartBeat to [%v] successfully", rf.me, server)
+							// log.Printf("[%v] send HeartBeat to [%v] successfully", rf.me, server)
 						}
 						rf.nextIndex[server] = newNextIndex // apply success, update next index
 						rf.matchIndex[server] = newNextIndex - 1
@@ -1042,10 +1043,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.ticker()
 	// start applyEntries goroutine to apply committed entries
 	go rf.applyEntries()
-
-	if rf.state == RS_Leader {
-		go rf.serveAsLeader()
-	}
 
 	return rf
 }
