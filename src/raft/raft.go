@@ -238,6 +238,7 @@ type AppendEntriesArgs struct {
 	PrevLogTerm  int
 	Entries      []logEntry
 	LeaderCommit int
+	IsFix        bool
 }
 
 type AppendEntriesReply struct {
@@ -312,7 +313,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 
 	if len(args.Entries) != 0 {
-		log.Printf("[%v] receive AppendEntries from [%v] in term %v\n", rf.me, args.LeaderId, args.Term)
+		log.Printf("[%v] receive AppendEntries from [%v] in term %v from #%v to #%v\n", rf.me, args.LeaderId, args.Term, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries))
 	}
 
 	// State Synchronization
@@ -373,7 +374,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// fix package from leader
-	if prevLogIndex > args.PrevLogIndex && args.PrevLogIndex == rf.lastApplied {
+	if prevLogIndex > args.PrevLogIndex && args.PrevLogIndex == rf.lastApplied && args.LeaderCommit >= rf.commitIndex {
+		// i := 0
+		// for ; i < len(args.Entries) && rf.localIndex(i+args.PrevLogIndex+1) < len(rf.log); i++ {
+		// 	if args.Entries[i].Term != rf.log[rf.localIndex(i+args.PrevLogIndex+1)].Term {
+		// 		break
+		// 	}
+		// }
+		if !args.IsFix { // Is fix package ?
+			log.Printf("[%v] refuse to use fix package because it's a outdated package", rf.me)
+			reply.Success = false
+			return
+		}
+
 		rf.log = append(rf.log[:rf.localIndex(args.PrevLogIndex+1)], args.Entries...) // left-closed and right-open interval for slice
 		rf.persist()
 		reply.Success = true
@@ -389,9 +402,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.commitIndex = minIndex
 		}
 
-		if len(args.Entries) != 0 { // ignore printing heart beat message
-			log.Printf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
-		}
+		log.Printf("[%v] receive a fix package from [%v]", rf.me, args.LeaderId)
+		log.Printf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
 		return
 	}
 
@@ -772,20 +784,20 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 			currReply := AppendEntriesReply{}
 
 			for !rf.killed() {
-				// ok := rf.sendAppendEntries(server, &currArgs, &currReply)
-				// if !ok {
-				// 	// log.Printf("[%v] failed to send AppendEntries to [%v] due to RPC error", rf.me, server)
-				// 	return // for some reasons, RPC failed(e.g. network error), let's do it next round
-				// } //else {
-				// // 	// log.Printf("[%v] send RPC to [%v] successfully", rf.me, server)
-				// // }
-				ok := false
-				for !rf.killed() && !ok {
-					if atomic.LoadInt32(cancelToken) == 1 {
-						return
-					}
-					ok = rf.sendAppendEntries(server, &currArgs, &currReply)
-				}
+				ok := rf.sendAppendEntries(server, &currArgs, &currReply)
+				if !ok {
+					// log.Printf("[%v] failed to send AppendEntries to [%v] due to RPC error", rf.me, server)
+					return // for some reasons, RPC failed(e.g. network error), let's do it next round
+				} //else {
+				// 	// log.Printf("[%v] send RPC to [%v] successfully", rf.me, server)
+				// }
+				// ok := false
+				// for !rf.killed() && !ok {
+				// 	if atomic.LoadInt32(cancelToken) == 1 {
+				// 		return
+				// 	}
+				// 	ok = rf.sendAppendEntries(server, &currArgs, &currReply)
+				// }
 
 				rf.mu.Lock()
 				if currReply.Success {
@@ -866,6 +878,7 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 						// Entries:      append([]logEntry(nil), rf.log[rf.localIndex(currReply.LastApplied+1):]...), // deep copy to avoid data racing in Raft.AppendEntries()
 						Entries:      newEntries,
 						LeaderCommit: rf.commitIndex,
+						IsFix:        true,
 					}
 					currReply = AppendEntriesReply{}
 
@@ -890,20 +903,20 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 					log.Printf("[%v] try to send InstallSnapshot to [%v]", rf.me, server)
 					rf.mu.Unlock()
 
-					// ok := rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
-					// if !ok {
-					// 	log.Printf("[%v] send InstallSnapshot RPC failed", rf.me)
-					// 	return
-					// } else {
-					// 	log.Printf("[%v] send InstallSnapshot RPC succeed", rf.me)
-					// }
-					ok := false
-					for !rf.killed() && !ok {
-						if atomic.LoadInt32(cancelToken) == 1 {
-							return
-						}
-						ok = rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
+					ok := rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
+					if !ok {
+						log.Printf("[%v] send InstallSnapshot RPC failed", rf.me)
+						return
+					} else {
+						log.Printf("[%v] send InstallSnapshot RPC succeed", rf.me)
 					}
+					// ok := false
+					// for !rf.killed() && !ok {
+					// 	if atomic.LoadInt32(cancelToken) == 1 {
+					// 		return
+					// 	}
+					// 	ok = rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
+					// }
 
 					rf.mu.Lock()
 					if senderTerm < snapshotReply.Term {
