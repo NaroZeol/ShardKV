@@ -313,8 +313,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if len(args.Entries) != 0 {
 		log.Printf("[%v] receive AppendEntries from [%v] in term %v\n", rf.me, args.LeaderId, args.Term)
-	} else {
-		// log.Printf("[%v] receive HeartBeat from [%v] in term %v\n", rf.me, args.LeaderId, args.Term)
 	}
 
 	// State Synchronization
@@ -548,7 +546,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index = rf.globalLogLen() - 1
 	term = rf.currentTerm
 	isLeader = true
-	log.Printf("[%v] leader append entry #%v in its log", rf.me, index)
+	log.Printf("[%v] leader append entry #%v to its log in term %v", rf.me, index, term)
 	rf.cond.Signal()
 	rf.mu.Unlock()
 
@@ -710,7 +708,7 @@ func (rf *Raft) applyEntries() {
 				applyMsg := ApplyMsg{
 					CommandValid:  true,
 					Command:       rf.log[rf.localIndex(i)].Command,
-					CommandIndex:  rf.lastApplied + 1,
+					CommandIndex:  i,
 					SnapshotValid: false,
 				}
 
@@ -725,7 +723,7 @@ func (rf *Raft) applyEntries() {
 					rf.lastApplied = i
 				}
 
-				log.Printf("[%v] apply entry #%v to state machine", rf.me, rf.lastApplied)
+				log.Printf("[%v] apply entry #%v to state machine", rf.me, i)
 			} else {
 				break
 			}
@@ -812,6 +810,7 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 						rf.persist()
 						log.Printf("[%v] get a reply from higher term %v, turn to follower\n", rf.me, currReply.Term)
 						isCancel = true
+						atomic.StoreInt32(cancelToken, 1)
 					}
 					rf.mu.Unlock()
 					return
@@ -852,18 +851,26 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 				if rf.localIndex(currReply.LastApplied+1) > 0 &&
 					(currReply.PrevLogIndex < currArgs.PrevLogIndex && currReply.PrevLogTerm != rf.log[rf.localIndex(currReply.PrevLogIndex)].Term ||
 						currReply.PrevLogIndex >= currArgs.PrevLogIndex) {
+					// Fix for specail case where Leader call Snapshot when sending AppendEntries RPC (where no lock to protect log)
+					// which cause leader's local log length less than reply.LastApplied + 1
+					newEntries := make([]logEntry, 0)
+					if rf.localIndex(currReply.LastApplied+1) < len(rf.log) {
+						newEntries = append([]logEntry(nil), rf.log[rf.localIndex(currReply.LastApplied+1):]...) // deep copy to avoid data racing in Raft.AppendEntries()
+					}
 					currArgs = AppendEntriesArgs{
 						Term:         rf.currentTerm,
 						LeaderId:     rf.me,
 						PrevLogIndex: currReply.LastApplied,
-						PrevLogTerm:  rf.log[rf.localIndex(currReply.LastApplied)].Term,
-						Entries:      append([]logEntry(nil), rf.log[rf.localIndex(currReply.LastApplied+1):]...), // deep copy to avoid data racing in Raft.AppendEntries()
+						PrevLogTerm:  1, // fix package do not care PrevLogTerm
+						// PrevLogTerm:  rf.log[rf.localIndex(currReply.LastApplied)].Term,
+						// Entries:      append([]logEntry(nil), rf.log[rf.localIndex(currReply.LastApplied+1):]...), // deep copy to avoid data racing in Raft.AppendEntries()
+						Entries:      newEntries,
 						LeaderCommit: rf.commitIndex,
 					}
 					currReply = AppendEntriesReply{}
 
 					if !rf.killed() { // fix for strange output when a test is done
-						log.Printf("[%v] resend entries to [%v] from #%v to #%v", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
+						log.Printf("[%v] send fix package to [%v] from #%v to #%v", rf.me, server, currArgs.PrevLogIndex+1, currArgs.PrevLogIndex+len(currArgs.Entries))
 					}
 					rf.mu.Unlock()
 					continue
@@ -993,7 +1000,7 @@ func (rf *Raft) serveAsLeader() {
 		rf.mu.Lock()
 		rf.cond.Wait()
 
-		if rf.state != RS_Leader {
+		if rf.state != RS_Leader || atomic.LoadInt32(&cancelToken) == 1 {
 			atomic.StoreInt32(&cancelToken, 1)
 			rf.mu.Unlock()
 			return
@@ -1035,20 +1042,29 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 
+	rf.lastHeartBeat = time.Now()
+	rf.applyCh = applyCh
+	rf.cond = *sync.NewCond(&rf.mu)
+
 	// initialize from state persisted before a crash
 	rf.snapshot = make([]byte, 0)
 	rf.readPersist(persister.ReadRaftState())
-	if len(rf.snapshot) != 0 {
-		// ********VERY VERY IMPORTANT!!!!!!!!!!!!!!!!!!!!!!!!!*******
-		// Make() must return quickly, so it should start goroutines
-		// for any long-running work.
-		// applyCh will receive ApplyMsg only after Make() is done
-		// So we need to start goroutine to send ApplyMsg
-		// Took me about 3 hours to find this problem
-		go func() {
+
+	log.SetOutput(io.Discard)
+	log.SetOutput(os.Stdout)
+	log.Printf("[%v] start in Term %v", rf.me, rf.currentTerm)
+
+	rf.mu.Lock()
+	go func() { // start server, use goroutine to fast return
+		if len(rf.snapshot) != 0 {
+			// ********VERY VERY IMPORTANT!!!!!!!!!!!!!!!!!!!!!!!!!*******
+			// Make() must return quickly, so it should start goroutines
+			// for any long-running work.
+			// applyCh will receive ApplyMsg only after Make() is done
+			// So we need to start goroutine to send ApplyMsg
+			// Took me about 3 hours to find this problem
 			log.Printf("[%v] try to rebuild state machine from snapshot", rf.me)
-			rf.mu.Lock() // other goroutines can run only after rebuilding state machine is finished
-			applyCh <- ApplyMsg{
+			rf.applyCh <- ApplyMsg{
 				CommandValid:  false,
 				SnapshotValid: true,
 				Snapshot:      rf.snapshot,
@@ -1058,30 +1074,28 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			rf.commitIndex = rf.snapshotIndex
 			rf.lastApplied = rf.snapshotIndex
 			rf.log[0].Term = rf.snapshotTerm
-			rf.mu.Unlock()
 
 			log.Printf("[%v] rebuild state machine from snapshot", rf.me)
-		}()
-	}
+		}
 
-	// Volatile state on leaders
-	rf.nextIndex = make([]int, len(peers))
-	for i := range rf.nextIndex {
-		rf.nextIndex[i] = rf.globalLogLen() // initialized to leader last log index + 1 (Figure 2)
-	}
-	rf.matchIndex = make([]int, len(peers))
+		// Volatile state on leaders
+		rf.nextIndex = make([]int, len(rf.peers))
+		for i := range rf.nextIndex {
+			rf.nextIndex[i] = rf.globalLogLen() // initialized to leader last log index + 1 (Figure 2)
+		}
+		rf.matchIndex = make([]int, len(rf.peers))
 
-	rf.lastHeartBeat = time.Now()
-	rf.applyCh = applyCh
-	rf.cond = *sync.NewCond(&rf.mu)
+		// start ticker goroutine to start elections
+		go rf.ticker()
+		// start applyEntries goroutine to apply committed entries
+		go rf.applyEntries()
 
-	log.SetOutput(os.Stdout)
-	log.SetOutput(io.Discard)
-	log.Printf("[%v] start in Term %v", rf.me, rf.currentTerm)
-	// start ticker goroutine to start elections
-	go rf.ticker()
-	// start applyEntries goroutine to apply committed entries
-	go rf.applyEntries()
+		if rf.state == RS_Leader {
+			go rf.serveAsLeader()
+		}
+
+		rf.mu.Unlock()
+	}()
 
 	return rf
 }
