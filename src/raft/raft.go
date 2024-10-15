@@ -373,7 +373,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// fix package from leader
-	if prevLogIndex > args.PrevLogIndex && args.PrevLogIndex == rf.lastApplied && args.LeaderCommit >= rf.commitIndex {
+	if prevLogIndex > args.PrevLogIndex && args.PrevLogIndex == rf.lastApplied {
 
 		// prefix entries check
 		i := 0
@@ -412,6 +412,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		if len(args.Entries) != 0 { //ignore printing heart beat message
 			log.Printf("[%v] reject to append entries from #%v to #%v with different index #%v or term %v", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries), prevLogIndex, prevLogTerm)
+			log.Printf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm)
 		}
 		return
 	}
@@ -816,7 +817,7 @@ func (rf *Raft) handleFailReply(server int, args *AppendEntriesArgs, reply *Appe
 			reply.PrevLogIndex != args.PrevLogIndex && reply.PrevLogIndex < rf.globalLogLen() && reply.PrevLogTerm == rf.log[rf.localIndex(reply.PrevLogIndex)].Term) {
 
 		rf.nextIndex[server] = reply.PrevLogIndex + 1
-		log.Printf("[%v] set nextIndex[%v] to %v", rf.me, server, reply.PrevLogIndex+1)
+		log.Printf("[%v] set nextIndex[%v] to reply.PrevLogIndex+1: #%v", rf.me, server, reply.PrevLogIndex+1)
 		return
 	}
 
@@ -836,7 +837,7 @@ func (rf *Raft) handleFailReply(server int, args *AppendEntriesArgs, reply *Appe
 		(reply.PrevLogIndex < args.PrevLogIndex && reply.PrevLogTerm != rf.log[rf.localIndex(reply.PrevLogIndex)].Term ||
 			reply.PrevLogIndex >= args.PrevLogIndex) {
 		rf.nextIndex[server] = reply.LastApplied + 1
-		log.Printf("[%v] set nextIndex[%v] to %v", rf.me, server, reply.LastApplied+1)
+		log.Printf("[%v] set nextIndex[%v] to reply.LastApplied+1: #%v", rf.me, server, reply.LastApplied+1)
 		return
 	}
 
