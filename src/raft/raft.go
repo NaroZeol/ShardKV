@@ -648,15 +648,20 @@ func (rf *Raft) election(cancelToken *int32) {
 			continue
 		}
 
-		go func(num int) {
+		go func(server int) {
 			reply := RequestVoteReply{}
 
 			// repeat sending vote request until
 			ok := false
+			retryCount := 0
 			for !ok && atomic.LoadInt32(cancelToken) != 1 { // Retry forever
-				ok = rf.sendRequestVote(num, &args, &reply)
+				ok = rf.sendRequestVote(server, &args, &reply)
+				if retryCount++; retryCount >= MAX_RETRY_TIMES {
+					log.Printf("[%v] try %v times to send RequestVote to [%v] but failed, stop sending", rf.me, MAX_RETRY_TIMES, server)
+					return
+				}
 			}
-			if !ok {
+			if atomic.LoadInt32(cancelToken) == 1 {
 				return // cancel
 			}
 			// log.Printf("[%v] send RequestVote to [%v] successfully\n", votedForCandiate, num)
@@ -671,14 +676,14 @@ func (rf *Raft) election(cancelToken *int32) {
 					rf.votedFor = nil
 					rf.persist()
 					atomic.StoreInt32(cancelToken, 1) // cancel
-					log.Printf("[%v] stop election because [%v] has higher term, turn to follower\n", rf.me, num)
+					log.Printf("[%v] stop election because [%v] has higher term, turn to follower\n", rf.me, server)
 					isCancel = true
 				}
 
 				rf.mu.Unlock()
 			} else if reply.VoteGranted { // granted!
 				atomic.AddInt32(&ballotCount, 1)
-				log.Printf("[%v] get ballot from [%v]", rf.me, num)
+				log.Printf("[%v] get ballot from [%v]", rf.me, server)
 			}
 		}(i)
 	}
@@ -781,8 +786,13 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 
 		go func(server int) {
 			ok := false
+			retryCount := 0
 			for atomic.LoadInt32(cancelToken) != 1 && !ok {
 				ok = rf.sendAppendEntries(server, &args, &reply)
+				if retryCount++; retryCount >= MAX_RETRY_TIMES {
+					log.Printf("[%v] try %v times to send AppendEntries to [%v] but failed, stop sending", rf.me, MAX_RETRY_TIMES, server)
+					return
+				}
 			}
 			if atomic.LoadInt32(cancelToken) == 1 { // is cancelled
 				return
@@ -859,12 +869,18 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 		}
 		snapshotReply := InstallSnapshotReply{}
 
-		log.Printf("[%v] try to send InstallSnapshot to [%v]", rf.me, server)
 		rf.mu.Unlock()
+		log.Printf("[%v] try to send InstallSnapshot to [%v]", rf.me, server)
 
 		ok := false
+		retryCount := 0
 		for atomic.LoadInt32(cancelToken) != 1 && !ok {
 			ok = rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
+			if retryCount++; retryCount >= MAX_RETRY_TIMES {
+				log.Printf("[%v] try %v times to send InstallSnapshot to [%v] but failed, stop sending", rf.me, MAX_RETRY_TIMES, server)
+				rf.mu.Lock() // handleFailedReply() is called with a lock and return with lock hold
+				return
+			}
 		}
 		if atomic.LoadInt32(cancelToken) == 1 { // is cancelled
 			rf.mu.Lock() // handleFailedReply() is called with a lock and return with lock hold
@@ -895,7 +911,7 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 	// Commit Check
 	for {
 		if atomic.LoadInt32(cancelToken) == 1 {
-			break
+			return
 		}
 		rf.mu.Lock()
 		N := rf.commitIndex // name from paper
@@ -923,7 +939,7 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 			rf.commitIndex = newCommitIndex
 		}
 		rf.mu.Unlock()
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
