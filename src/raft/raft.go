@@ -591,15 +591,28 @@ func (rf *Raft) ticker() {
 
 		// Heart beat timeout
 		if rf.state != RS_Leader && time.Since(rf.lastHeartBeat) > TM_ElectionTimeout {
-			// log.Printf("[%v] heart beat timeout\n", rf.me)
 			rf.state = RS_Candiate
-			rf.lastHeartBeat = time.Now() // reset election timer
 			rf.persist()
 
 			// Start an election, if other one win the election, state will not be Candiate
 			// or voting to someone that reset heartbeat time
 			rf.mu.Unlock()
-			go rf.election()
+
+			cancelToken := int32(0)
+			rf.lastHeartBeat = time.Now() // reset election timer
+
+			go rf.election(&cancelToken)
+			for {
+				rf.mu.Lock()
+				if time.Since(rf.lastHeartBeat) > TM_ElectionTimeout || atomic.LoadInt32(&cancelToken) == 1 ||
+					rf.state != RS_Candiate || rf.killed() {
+					atomic.StoreInt32(&cancelToken, 1)
+					rf.mu.Unlock()
+					break
+				}
+				rf.mu.Unlock()
+				time.Sleep(30 * time.Millisecond)
+			}
 		} else {
 			rf.mu.Unlock()
 		}
@@ -611,16 +624,15 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) election() {
+func (rf *Raft) election(cancelToken *int32) {
 	rf.mu.Lock()
-	var ballotCount = 1
-	var ballotMutex = sync.Mutex{}
 
 	rf.votedFor = &rf.me // vote for self
 	rf.currentTerm = rf.currentTerm + 1
 	rf.persist()
 	log.Printf("[%v] start an election in term %v\n", rf.me, rf.currentTerm)
 
+	ballotCount := int32(1)
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandiateId:   rf.me,
@@ -628,9 +640,8 @@ func (rf *Raft) election() {
 		LastLogTerm:  rf.log[len(rf.log)-1].Term,
 	}
 
-	votedForTerm := rf.currentTerm
-	votedForCandiate := rf.me
 	isCancel := false
+	votedForTerm := rf.currentTerm
 
 	for i := range rf.peers {
 		if i == rf.me {
@@ -640,18 +651,13 @@ func (rf *Raft) election() {
 		go func(num int) {
 			reply := RequestVoteReply{}
 
-			// repeat sending vote request
+			// repeat sending vote request until
 			ok := false
-			for !ok { // Retry forever
-				rf.mu.Lock()
-				isCandiate := rf.state == RS_Candiate
-				isSameTerm := rf.currentTerm == votedForTerm
-				rf.mu.Unlock()
-				if isCandiate && isSameTerm {
-					ok = rf.sendRequestVote(num, &args, &reply)
-				} else {
-					return
-				}
+			for !ok && atomic.LoadInt32(cancelToken) != 1 { // Retry forever
+				ok = rf.sendRequestVote(num, &args, &reply)
+			}
+			if !ok {
+				return // cancel
 			}
 			// log.Printf("[%v] send RequestVote to [%v] successfully\n", votedForCandiate, num)
 
@@ -664,32 +670,29 @@ func (rf *Raft) election() {
 					rf.state = RS_Follower
 					rf.votedFor = nil
 					rf.persist()
-					log.Printf("[%v] stop election because [%v] has higher term, turn to follower\n", votedForCandiate, num)
+					atomic.StoreInt32(cancelToken, 1) // cancel
+					log.Printf("[%v] stop election because [%v] has higher term, turn to follower\n", rf.me, num)
 					isCancel = true
 				}
 
 				rf.mu.Unlock()
 			} else if reply.VoteGranted { // granted!
-				ballotMutex.Lock()
-				ballotCount += 1
-				ballotMutex.Unlock()
-				log.Printf("[%v] get ballot from [%v]", votedForCandiate, num)
+				atomic.AddInt32(&ballotCount, 1)
+				log.Printf("[%v] get ballot from [%v]", rf.me, num)
 			}
 		}(i)
 	}
 	rf.mu.Unlock()
 
-	for !rf.killed() {
-		ballotMutex.Lock()
-		ballot := ballotCount
-		ballotMutex.Unlock()
+	for {
+		ballot := atomic.LoadInt32(&ballotCount)
+
+		if atomic.LoadInt32(cancelToken) == 1 {
+			return
+		}
 
 		rf.mu.Lock()
-		if rf.state != RS_Candiate || rf.currentTerm != votedForTerm {
-			rf.mu.Unlock()
-			log.Printf("[%v] lose the election in term %v", rf.me, votedForTerm)
-			return
-		} else if rf.state == RS_Candiate && ballot >= len(rf.peers)/2+1 { // exceed half, success
+		if rf.state == RS_Candiate && ballot >= (int32)(len(rf.peers)/2+1) { // exceed half, success
 			rf.state = RS_Leader
 			rf.persist()
 			// Reinitialized after election
@@ -778,11 +781,11 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 
 		go func(server int) {
 			ok := false
-			for !ok && atomic.LoadInt32(cancelToken) != 1 {
+			for atomic.LoadInt32(cancelToken) != 1 && !ok {
 				ok = rf.sendAppendEntries(server, &args, &reply)
 			}
-			if !ok {
-				return // cancel
+			if atomic.LoadInt32(cancelToken) == 1 { // is cancelled
+				return
 			}
 
 			rf.mu.Lock()
@@ -863,6 +866,10 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 		for atomic.LoadInt32(cancelToken) != 1 && !ok {
 			ok = rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
 		}
+		if atomic.LoadInt32(cancelToken) == 1 { // is cancelled
+			rf.mu.Lock() // handleFailedReply() is called with a lock and return with lock hold
+			return
+		}
 
 		rf.mu.Lock()
 		if rf.currentTerm < snapshotReply.Term {
@@ -926,7 +933,7 @@ func (rf *Raft) heartBeat(cancelToken *int32) {
 			return
 		}
 		rf.cond.Signal()
-		time.Sleep(TM_SyncInterval)
+		time.Sleep(TM_HeartBeatInterval)
 	}
 }
 
@@ -1031,15 +1038,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		// start applyEntries goroutine to apply committed entries
 		go rf.applyEntries()
 
-		// if rf.state == RS_Leader {
-		// 	go rf.serveAsLeader()
-		// }
+		if rf.state == RS_Leader {
+			go rf.serveAsLeader(rf.currentTerm)
+		}
 
-		// Always start as follower
-		rf.state = RS_Follower
-
-		// TODO
-		// handle rf.commitIndex
+		// // Always start as follower
+		// rf.state = RS_Follower
 
 		rf.mu.Unlock()
 	}()
