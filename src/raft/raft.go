@@ -349,6 +349,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.PrevLogIndex = prevLogIndex
 	reply.PrevLogTerm = prevLogTerm
 	reply.LastApplied = lastApplied
+
 	// Good case
 	if prevLogIndex == args.PrevLogIndex && prevLogTerm == args.PrevLogTerm {
 		rf.log = append(rf.log, args.Entries...)
@@ -702,7 +703,7 @@ func (rf *Raft) election() {
 			rf.mu.Unlock()
 			log.Printf("\033[31m[%v] win the election in term %v\033[0m", rf.me, votedForTerm)
 			// go rf.syncEntries()
-			go rf.serveAsLeader()
+			go rf.serveAsLeader(rf.currentTerm)
 			return
 		}
 		rf.mu.Unlock()
@@ -747,7 +748,7 @@ func (rf *Raft) applyEntries() {
 	log.Printf("[%v] stop applyEntries because of death", rf.me)
 }
 
-func (rf *Raft) syncEntries() {
+func (rf *Raft) syncEntries(cancelToken *int32) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -776,9 +777,12 @@ func (rf *Raft) syncEntries() {
 		newNextIndex := rf.globalLogLen()
 
 		go func(server int) {
-			ok := rf.sendAppendEntries(server, &args, &reply)
+			ok := false
+			for !ok && atomic.LoadInt32(cancelToken) != 1 {
+				ok = rf.sendAppendEntries(server, &args, &reply)
+			}
 			if !ok {
-				return
+				return // cancel
 			}
 
 			rf.mu.Lock()
@@ -792,13 +796,13 @@ func (rf *Raft) syncEntries() {
 				rf.nextIndex[server] = newNextIndex // apply success, update next index
 				rf.matchIndex[server] = newNextIndex - 1
 			} else {
-				rf.handleFailReply(server, &args, &reply)
+				rf.handleFailedReply(server, &args, &reply, cancelToken)
 			}
 		}(i)
 	}
 }
 
-func (rf *Raft) handleFailReply(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, cancelToken *int32) {
 	defer rf.cond.Signal()
 	// Case 0: higher term, turn to follower
 	if args.Term < reply.Term {
@@ -856,7 +860,7 @@ func (rf *Raft) handleFailReply(server int, args *AppendEntriesArgs, reply *Appe
 		rf.mu.Unlock()
 
 		ok := false
-		for !rf.killed() && !ok {
+		for atomic.LoadInt32(cancelToken) != 1 && !ok {
 			ok = rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
 		}
 
@@ -882,9 +886,8 @@ func (rf *Raft) handleFailReply(server int, args *AppendEntriesArgs, reply *Appe
 
 func (rf *Raft) commitCheck(cancelToken *int32) {
 	// Commit Check
-	for !rf.killed() {
+	for {
 		if atomic.LoadInt32(cancelToken) == 1 {
-			log.Printf("[%v] stop commitCheck because it is not leader\n", rf.me)
 			break
 		}
 		rf.mu.Lock()
@@ -918,9 +921,8 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 }
 
 func (rf *Raft) heartBeat(cancelToken *int32) {
-	for !rf.killed() {
+	for {
 		if atomic.LoadInt32(cancelToken) == 1 {
-			log.Printf("[%v] stop sending HeartBeat because it is not leader", rf.me)
 			return
 		}
 		rf.cond.Signal()
@@ -928,7 +930,7 @@ func (rf *Raft) heartBeat(cancelToken *int32) {
 	}
 }
 
-func (rf *Raft) serveAsLeader() {
+func (rf *Raft) serveAsLeader(term int) {
 	cancelToken := int32(0)
 
 	go rf.commitCheck(&cancelToken)
@@ -938,13 +940,14 @@ func (rf *Raft) serveAsLeader() {
 		rf.mu.Lock()
 		rf.cond.Wait()
 
-		if rf.state != RS_Leader || atomic.LoadInt32(&cancelToken) == 1 {
+		if rf.killed() || rf.state != RS_Leader || rf.currentTerm != term {
 			atomic.StoreInt32(&cancelToken, 1)
+			log.Printf("[%v] lose it's right or dead, cancel all leader tasks", rf.me)
 			rf.mu.Unlock()
 			return
 		}
 
-		go rf.syncEntries()
+		go rf.syncEntries(&cancelToken)
 		rf.mu.Unlock()
 	}
 }
@@ -1028,9 +1031,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		// start applyEntries goroutine to apply committed entries
 		go rf.applyEntries()
 
-		if rf.state == RS_Leader {
-			go rf.serveAsLeader()
-		}
+		// if rf.state == RS_Leader {
+		// 	go rf.serveAsLeader()
+		// }
+
+		// Always start as follower
+		rf.state = RS_Follower
+
+		// TODO
+		// handle rf.commitIndex
 
 		rf.mu.Unlock()
 	}()
