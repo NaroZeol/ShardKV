@@ -341,6 +341,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
+	updateCommitIndex := func() {
+		// set new commit index
+		if args.LeaderCommit > rf.commitIndex {
+			minIndex := 0
+			if args.LeaderCommit <= rf.globalLogLen()-1 {
+				minIndex = args.LeaderCommit
+			} else {
+				minIndex = rf.globalLogLen() - 1
+			}
+			rf.commitIndex = minIndex
+			log.Printf("[%v] update commitIndex to #%v", rf.me, rf.commitIndex)
+		}
+	}
+
 	// Log Synchronization
 	prevLogIndex := rf.globalLogLen() - 1
 	prevLogTerm := rf.log[len(rf.log)-1].Term
@@ -357,15 +371,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = true
 
 		// set new commit index
-		if args.LeaderCommit > rf.commitIndex {
-			minIndex := 0
-			if args.LeaderCommit <= rf.globalLogLen()-1 {
-				minIndex = args.LeaderCommit
-			} else {
-				minIndex = rf.globalLogLen() - 1
-			}
-			rf.commitIndex = minIndex
-		}
+		updateCommitIndex()
 
 		if len(args.Entries) != 0 { // ignore printing heart beat message
 			log.Printf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
@@ -375,7 +381,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// fix package from leader
 	if prevLogIndex > args.PrevLogIndex && args.PrevLogIndex == rf.lastApplied {
-
 		// prefix entries check
 		i := 0
 		for ; i < len(args.Entries) && rf.localIndex(i+rf.lastApplied+1) < len(rf.log); i++ {
@@ -385,6 +390,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		if i == len(args.Entries) {
 			log.Printf("[%v] refuse to use fix package because it's prefix entries", rf.me)
+			log.Printf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
 			return
 		}
 
@@ -393,15 +399,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = true
 
 		// set new commit index
-		if args.LeaderCommit > rf.commitIndex {
-			minIndex := 0
-			if args.LeaderCommit <= rf.globalLogLen()-1 {
-				minIndex = args.LeaderCommit
-			} else {
-				minIndex = rf.globalLogLen() - 1
-			}
-			rf.commitIndex = minIndex
-		}
+		updateCommitIndex()
 
 		log.Printf("[%v] receive a fix package from [%v]", rf.me, args.LeaderId)
 		log.Printf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
@@ -413,7 +411,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		if len(args.Entries) != 0 { //ignore printing heart beat message
 			log.Printf("[%v] reject to append entries from #%v to #%v with different index #%v or term %v", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries), prevLogIndex, prevLogTerm)
-			log.Printf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm)
+			log.Printf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
 		}
 		return
 	}
@@ -798,13 +796,12 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 				return
 			}
 
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
 			if reply.Success {
+				rf.mu.Lock()
+				defer rf.mu.Unlock()
+
 				if len(args.Entries) != 0 {
 					log.Printf("[%v] send entries to [%v] from #%v to #%v successfully", rf.me, server, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries))
-				} else {
-					// log.Printf("[%v] send HeartBeat to [%v] successfully", rf.me, server)
 				}
 				rf.nextIndex[server] = newNextIndex // apply success, update next index
 				rf.matchIndex[server] = newNextIndex - 1
@@ -816,6 +813,7 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 }
 
 func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, cancelToken *int32) {
+	rf.mu.Lock()
 	defer rf.cond.Signal()
 	// Case 0: higher term, turn to follower
 	if args.Term < reply.Term {
@@ -824,6 +822,7 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 		rf.currentTerm = reply.Term
 		rf.persist()
 		log.Printf("[%v] get a reply from higher term %v, turn to follower\n", rf.me, reply.Term)
+		rf.mu.Unlock()
 		return
 	}
 
@@ -835,6 +834,7 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 
 		rf.nextIndex[server] = reply.PrevLogIndex + 1
 		log.Printf("[%v] set nextIndex[%v] to reply.PrevLogIndex+1: #%v", rf.me, server, reply.PrevLogIndex+1)
+		rf.mu.Unlock()
 		return
 	}
 
@@ -855,6 +855,7 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 			reply.PrevLogIndex >= args.PrevLogIndex) {
 		rf.nextIndex[server] = reply.LastApplied + 1
 		log.Printf("[%v] set nextIndex[%v] to reply.LastApplied+1: #%v", rf.me, server, reply.LastApplied+1)
+		rf.mu.Unlock()
 		return
 	}
 
@@ -878,12 +879,10 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 			ok = rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
 			if retryCount++; retryCount >= MAX_RETRY_TIMES {
 				log.Printf("[%v] try %v times to send InstallSnapshot to [%v] but failed, stop sending", rf.me, MAX_RETRY_TIMES, server)
-				rf.mu.Lock() // handleFailedReply() is called with a lock and return with lock hold
 				return
 			}
 		}
 		if atomic.LoadInt32(cancelToken) == 1 { // is cancelled
-			rf.mu.Lock() // handleFailedReply() is called with a lock and return with lock hold
 			return
 		}
 
@@ -894,13 +893,16 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 			rf.currentTerm = snapshotReply.Term
 			rf.persist()
 			log.Printf("[%v] InstallSnapshot but get a reply from higher term %v, turn to follower\n", rf.me, snapshotReply.Term)
+			rf.mu.Unlock()
 			return
 		}
 		rf.nextIndex[server] = snapshotArgs.LastIncludedIndex + 1
 
 		log.Printf("[%v] send InstallSnapshot to [%v] successfully", rf.me, server)
+		rf.mu.Unlock()
 		return
 	}
+
 	// unreachable, for debug
 	log.Printf("args: %+v", args)
 	log.Printf("reply: %+v", reply)
