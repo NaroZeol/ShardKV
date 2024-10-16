@@ -599,12 +599,14 @@ func (rf *Raft) ticker() {
 			cancelToken := int32(0)
 			rf.lastHeartBeat = time.Now() // reset election timer
 
+			votedForTerm := rf.currentTerm + 1
 			go rf.election(&cancelToken)
 			for {
 				rf.mu.Lock()
 				if time.Since(rf.lastHeartBeat) > TM_ElectionTimeout || atomic.LoadInt32(&cancelToken) == 1 ||
 					rf.state != RS_Candiate || rf.killed() {
 					atomic.StoreInt32(&cancelToken, 1)
+					log.Printf("[%v] lose election in term %v", rf.me, votedForTerm)
 					rf.mu.Unlock()
 					break
 				}
@@ -655,7 +657,7 @@ func (rf *Raft) election(cancelToken *int32) {
 			for !ok && atomic.LoadInt32(cancelToken) != 1 { // Retry forever
 				ok = rf.sendRequestVote(server, &args, &reply)
 				if retryCount++; retryCount >= MAX_RETRY_TIMES {
-					log.Printf("[%v] try %v times to send RequestVote to [%v] but failed, stop sending", rf.me, MAX_RETRY_TIMES, server)
+					log.Printf("[%v] try %v times to send RequestVote to [%v]. stop sending", rf.me, MAX_RETRY_TIMES, server)
 					return
 				}
 			}
@@ -788,7 +790,7 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 			for atomic.LoadInt32(cancelToken) != 1 && !ok {
 				ok = rf.sendAppendEntries(server, &args, &reply)
 				if retryCount++; retryCount >= MAX_RETRY_TIMES {
-					log.Printf("[%v] try %v times to send AppendEntries to [%v] but failed, stop sending", rf.me, MAX_RETRY_TIMES, server)
+					log.Printf("[%v] try %v times to send AppendEntries to [%v], stop sending", rf.me, MAX_RETRY_TIMES, server)
 					return
 				}
 			}
@@ -800,9 +802,6 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 
-				if len(args.Entries) != 0 {
-					log.Printf("[%v] send entries to [%v] from #%v to #%v successfully", rf.me, server, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries))
-				}
 				rf.nextIndex[server] = newNextIndex // apply success, update next index
 				rf.matchIndex[server] = newNextIndex - 1
 			} else {
@@ -814,7 +813,7 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 
 func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, cancelToken *int32) {
 	rf.mu.Lock()
-	defer rf.cond.Signal()
+	// defer rf.cond.Signal()
 	// Case 0: higher term, turn to follower
 	if args.Term < reply.Term {
 		rf.state = RS_Follower
@@ -833,7 +832,7 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 			reply.PrevLogIndex != args.PrevLogIndex && reply.PrevLogIndex < rf.globalLogLen() && reply.PrevLogTerm == rf.log[rf.localIndex(reply.PrevLogIndex)].Term) {
 
 		rf.nextIndex[server] = reply.PrevLogIndex + 1
-		log.Printf("[%v] set nextIndex[%v] to reply.PrevLogIndex+1: #%v", rf.me, server, reply.PrevLogIndex+1)
+		log.Printf("[%v] {case 1,2}: set nextIndex[%v] to reply.PrevLogIndex+1: #%v", rf.me, server, reply.PrevLogIndex+1)
 		rf.mu.Unlock()
 		return
 	}
@@ -854,7 +853,7 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 		(reply.PrevLogIndex < args.PrevLogIndex && reply.PrevLogTerm != rf.log[rf.localIndex(reply.PrevLogIndex)].Term ||
 			reply.PrevLogIndex >= args.PrevLogIndex) {
 		rf.nextIndex[server] = reply.LastApplied + 1
-		log.Printf("[%v] set nextIndex[%v] to reply.LastApplied+1: #%v", rf.me, server, reply.LastApplied+1)
+		log.Printf("[%v] {case3,4}: set nextIndex[%v] to reply.LastApplied+1: #%v", rf.me, server, reply.LastApplied+1)
 		rf.mu.Unlock()
 		return
 	}
