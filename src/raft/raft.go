@@ -216,6 +216,9 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.snapshotIndex = index // index is a global index
 	rf.snapshotTerm = rf.log[rf.localIndex(index)].Term
 	rf.persist()
+
+	rf.lastApplied = index
+	rf.commitIndex = index
 	log.Printf("[%v] create snapshot from #%v to #%v successfully", rf.me, beforeSnapshotIndex+1, index)
 }
 
@@ -460,8 +463,12 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			Command: "",
 		})
 	}
-	rf.lastApplied = args.LastIncludedIndex
-	rf.commitIndex = args.LastIncludedIndex
+	if rf.lastApplied <= args.LastIncludedIndex {
+		rf.lastApplied = args.LastIncludedIndex
+	}
+	if rf.commitIndex <= args.LastIncludedIndex {
+		rf.commitIndex = args.LastIncludedIndex
+	}
 	rf.state = RS_Follower
 	rf.snapshot = args.Data
 	rf.snapshotIndex = args.LastIncludedIndex
@@ -479,8 +486,12 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 
 	rf.mu.Lock()
-	rf.lastApplied = args.LastIncludedIndex
-	rf.commitIndex = args.LastIncludedIndex
+	if rf.lastApplied <= args.LastIncludedIndex {
+		rf.lastApplied = args.LastIncludedIndex
+	}
+	if rf.commitIndex <= args.LastIncludedIndex {
+		rf.commitIndex = args.LastIncludedIndex
+	}
 	rf.mu.Unlock()
 
 	log.Printf("[%v] install snapshot up to #%v successfully!", rf.me, args.LastIncludedIndex)
