@@ -19,10 +19,8 @@ package raft
 
 import (
 	"bytes"
-	"io"
 	"log"
 	"math/rand"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -157,7 +155,7 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 
-	log.Printf("[%v] try to readPersist", rf.me)
+	DPrintf("[%v] try to readPersist", rf.me)
 
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
@@ -174,12 +172,12 @@ func (rf *Raft) readPersist(data []byte) {
 		d.Decode(&_log) != nil ||
 		d.Decode(&_snapshotIndex) != nil ||
 		d.Decode(&_snapshotTerm) != nil {
-		log.Printf("[%v] readPersist failed", rf.me)
+		DPrintf("[%v] readPersist failed", rf.me)
 		return
 	}
 	var tmp int
 	if d.Decode(&tmp) != nil {
-		log.Printf("[%v] readPersist failed", rf.me)
+		DPrintf("[%v] readPersist failed", rf.me)
 		return
 	}
 	if tmp == -1 {
@@ -198,7 +196,7 @@ func (rf *Raft) readPersist(data []byte) {
 
 	rf.lastApplied = _snapshotIndex
 	rf.commitIndex = _snapshotIndex
-	log.Printf("[%v] readPersist succeed, restart in Term %v as state %v", rf.me, rf.currentTerm, rf.state)
+	DPrintf("[%v] readPersist succeed, restart in Term %v as state %v", rf.me, rf.currentTerm, rf.state)
 }
 
 // the service says it has created a snapshot that has
@@ -210,7 +208,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	defer rf.mu.Unlock()
 
 	beforeSnapshotIndex := rf.snapshotIndex
-	log.Printf("[%v] try to create snapshot from #%v to #%v", rf.me, beforeSnapshotIndex+1, index)
+	DPrintf("[%v] try to create snapshot from #%v to #%v", rf.me, beforeSnapshotIndex+1, index)
 	rf.log = rf.log[rf.localIndex(index):]
 	rf.snapshot = snapshot
 	rf.snapshotIndex = index // index is a global index
@@ -219,7 +217,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	rf.lastApplied = index
 	rf.commitIndex = index
-	log.Printf("[%v] create snapshot from #%v to #%v successfully", rf.me, beforeSnapshotIndex+1, index)
+	DPrintf("[%v] create snapshot from #%v to #%v successfully", rf.me, beforeSnapshotIndex+1, index)
 }
 
 type RequestVoteArgs struct {
@@ -268,7 +266,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	log.Printf("[%v] receive RequestVote from [%v] in term %v\n", rf.me, args.CandiateId, args.Term)
+	DPrintf("[%v] receive RequestVote from [%v] in term %v\n", rf.me, args.CandiateId, args.Term)
 
 	// default return
 	reply.Term = rf.currentTerm
@@ -278,7 +276,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	lastLogTerm := rf.log[len(rf.log)-1].Term
 
 	if args.Term < rf.currentTerm {
-		log.Printf("[%v] refuse to vote for [%v] in term %v because of more up-to-date entry %v\n", rf.me, args.CandiateId, args.Term, rf.currentTerm)
+		DPrintf("[%v] refuse to vote for [%v] in term %v because of more up-to-date entry %v\n", rf.me, args.CandiateId, args.Term, rf.currentTerm)
 		return
 	} else if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
@@ -286,14 +284,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.state = RS_Follower
 		rf.persist()
 
-		log.Printf("[%v] receive a RequestVote with higher term, change its term to %v\n", rf.me, rf.currentTerm)
+		DPrintf("[%v] receive a RequestVote with higher term, change its term to %v\n", rf.me, rf.currentTerm)
 	}
 
 	isUpToDate := (args.LastLogTerm > lastLogTerm) || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)
 	if !isUpToDate {
-		log.Printf("[%v] refuse to vote for [%v] in term %v because of more up-to-date log entry\n", rf.me, args.CandiateId, args.Term)
+		DPrintf("[%v] refuse to vote for [%v] in term %v because of more up-to-date log entry\n", rf.me, args.CandiateId, args.Term)
 	} else if rf.votedFor != nil && *rf.votedFor != args.CandiateId {
-		log.Printf("[%v] refuse to vote for [%v] in term %v because it has voted for [%v]", rf.me, args.CandiateId, args.Term, *rf.votedFor)
+		DPrintf("[%v] refuse to vote for [%v] in term %v because it has voted for [%v]", rf.me, args.CandiateId, args.Term, *rf.votedFor)
 	} else if (rf.votedFor == nil || *rf.votedFor == args.CandiateId) && isUpToDate {
 		rf.currentTerm = args.Term
 		rf.votedFor = &args.CandiateId
@@ -303,7 +301,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
-		log.Printf("[%v] vote for [%v] in term %v\n", rf.me, args.CandiateId, args.Term)
+		DPrintf("[%v] vote for [%v] in term %v\n", rf.me, args.CandiateId, args.Term)
 		return
 	} else {
 		log.Fatalf("[%v] reach unreachable in Raft.RequestVote\n", rf.me)
@@ -315,7 +313,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 
 	if len(args.Entries) != 0 {
-		log.Printf("[%v] receive AppendEntries from [%v] in term %v from #%v to #%v\n", rf.me, args.LeaderId, args.Term, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries))
+		DPrintf("[%v] receive AppendEntries from [%v] in term %v from #%v to #%v\n", rf.me, args.LeaderId, args.Term, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries))
 	}
 
 	// State Synchronization
@@ -330,7 +328,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.persist()
 		rf.lastHeartBeat = time.Now()
 		if formerState != RS_Follower {
-			log.Printf("[%v] turn to follower in term %v\n", rf.me, rf.currentTerm)
+			DPrintf("[%v] turn to follower in term %v\n", rf.me, rf.currentTerm)
 		}
 
 		reply.Success = true
@@ -338,7 +336,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	} else if args.Term < rf.currentTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
-		log.Printf("[%v] refuce to accept AppendEntries from [%v] in term %v because of higher term %v", rf.me, args.LeaderId, args.Term, rf.currentTerm)
+		DPrintf("[%v] refuce to accept AppendEntries from [%v] in term %v because of higher term %v", rf.me, args.LeaderId, args.Term, rf.currentTerm)
 		return
 	}
 
@@ -352,7 +350,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				minIndex = rf.globalLogLen() - 1
 			}
 			rf.commitIndex = minIndex
-			log.Printf("[%v] update commitIndex to #%v", rf.me, rf.commitIndex)
+			DPrintf("[%v] update commitIndex to #%v", rf.me, rf.commitIndex)
 		}
 	}
 
@@ -375,7 +373,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		updateCommitIndex()
 
 		if len(args.Entries) != 0 { // ignore printing heart beat message
-			log.Printf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
+			DPrintf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
 		}
 		return
 	}
@@ -390,8 +388,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 		}
 		if i == len(args.Entries) {
-			log.Printf("[%v] refuse to use fix package because it's prefix entries", rf.me)
-			log.Printf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
+			DPrintf("[%v] refuse to use fix package because it's prefix entries", rf.me)
+			DPrintf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
 			return
 		}
 
@@ -402,8 +400,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// set new commit index
 		updateCommitIndex()
 
-		log.Printf("[%v] receive a fix package from [%v]", rf.me, args.LeaderId)
-		log.Printf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
+		DPrintf("[%v] receive a fix package from [%v]", rf.me, args.LeaderId)
+		DPrintf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
 		return
 	}
 
@@ -411,38 +409,38 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if prevLogIndex != args.PrevLogIndex || prevLogTerm != args.PrevLogTerm {
 		reply.Success = false
 		if len(args.Entries) != 0 { //ignore printing heart beat message
-			log.Printf("[%v] reject to append entries from #%v to #%v with different index #%v or term %v", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries), prevLogIndex, prevLogTerm)
-			log.Printf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
+			DPrintf("[%v] reject to append entries from #%v to #%v with different index #%v or term %v", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries), prevLogIndex, prevLogTerm)
+			DPrintf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
 		}
 		return
 	}
 
 	// unreachable, for debug
-	log.Printf("args: %+v", *args)
-	log.Printf("prevLogIndex: %+v, prevLogTerm: %+v, lastApplied: %+v", prevLogIndex, prevLogTerm, lastApplied)
+	DPrintf("args: %+v", *args)
+	DPrintf("prevLogIndex: %+v, prevLogTerm: %+v, lastApplied: %+v", prevLogIndex, prevLogTerm, lastApplied)
 	log.Fatalf("[%v] reach unreachable in Raft.AppendEntries", rf.me)
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
 
-	log.Printf("[%v] receive InstallSnapshot from [%v]", rf.me, args.LeaderId)
+	DPrintf("[%v] receive InstallSnapshot from [%v]", rf.me, args.LeaderId)
 
 	reply.Term = rf.currentTerm
 
 	// check before install
 	if args.Term < rf.currentTerm {
-		log.Printf("[%v] refuse to install snapshot because of higher term", rf.me)
+		DPrintf("[%v] refuse to install snapshot because of higher term", rf.me)
 		rf.mu.Unlock()
 		return
 	}
 	if args.LastIncludedIndex < rf.snapshotIndex {
-		log.Printf("[%v] refuse to install snapshot because of more up-to-date snapshot", rf.me)
+		DPrintf("[%v] refuse to install snapshot because of more up-to-date snapshot", rf.me)
 		rf.mu.Unlock()
 		return
 	}
 	if args.LastIncludedIndex == rf.snapshotIndex {
-		log.Printf("[%v] refuce to install snapshot because of same up-to-date snapshot", rf.me)
+		DPrintf("[%v] refuce to install snapshot because of same up-to-date snapshot", rf.me)
 		rf.mu.Unlock()
 		return
 	}
@@ -492,7 +490,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 	rf.mu.Unlock()
 
-	log.Printf("[%v] install snapshot up to #%v successfully!", rf.me, args.LastIncludedIndex)
+	DPrintf("[%v] install snapshot up to #%v successfully!", rf.me, args.LastIncludedIndex)
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -575,7 +573,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index = rf.globalLogLen() - 1
 	term = rf.currentTerm
 	isLeader = true
-	log.Printf("[%v] leader append entry #%v to its log in term %v", rf.me, index, term)
+	DPrintf("[%v] leader append entry #%v to its log in term %v", rf.me, index, term)
 	rf.cond.Signal()
 
 	return index, term, isLeader
@@ -643,7 +641,7 @@ func (rf *Raft) election(cancelToken *int32) {
 	rf.votedFor = &rf.me // vote for self
 	rf.currentTerm = rf.currentTerm + 1
 	rf.persist()
-	log.Printf("[%v] start an election in term %v\n", rf.me, rf.currentTerm)
+	DPrintf("[%v] start an election in term %v\n", rf.me, rf.currentTerm)
 
 	ballotCount := int32(1)
 	args := RequestVoteArgs{
@@ -670,28 +668,28 @@ func (rf *Raft) election(cancelToken *int32) {
 			for !ok && atomic.LoadInt32(cancelToken) != 1 { // Retry forever
 				ok = rf.sendRequestVote(server, &args, &reply)
 				if retryCount++; retryCount >= MAX_RETRY_TIMES {
-					log.Printf("[%v] try %v times to send RequestVote to [%v]. stop sending", rf.me, MAX_RETRY_TIMES, server)
+					DPrintf("[%v] try %v times to send RequestVote to [%v]. stop sending", rf.me, MAX_RETRY_TIMES, server)
 					return
 				}
 			}
 			if atomic.LoadInt32(cancelToken) == 1 {
 				return // cancel
 			}
-			// log.Printf("[%v] send RequestVote to [%v] successfully\n", votedForCandiate, num)
+			// DPrintf("[%v] send RequestVote to [%v] successfully\n", votedForCandiate, num)
 
 			if !reply.VoteGranted && reply.Term > votedForTerm { // if there is a higher term, stop election
 				rf.mu.Lock()
 
 				if !isCancel {
 					atomic.StoreInt32(cancelToken, 1) // cancel
-					log.Printf("[%v] stop election because [%v] has higher term, turn to follower\n", rf.me, server)
+					DPrintf("[%v] stop election because [%v] has higher term, turn to follower\n", rf.me, server)
 					isCancel = true
 				}
 
 				rf.mu.Unlock()
 			} else if reply.VoteGranted { // granted!
 				atomic.AddInt32(&ballotCount, 1)
-				log.Printf("[%v] get ballot from [%v]", rf.me, server)
+				DPrintf("[%v] get ballot from [%v]", rf.me, server)
 			}
 		}(i)
 	}
@@ -717,7 +715,7 @@ func (rf *Raft) election(cancelToken *int32) {
 				rf.matchIndex[i] = 0
 			}
 			rf.mu.Unlock()
-			log.Printf("\033[31m[%v] win the election in term %v\033[0m", rf.me, votedForTerm)
+			DPrintf("\033[31m[%v] win the election in term %v\033[0m", rf.me, votedForTerm)
 			// go rf.syncEntries()
 			go rf.serveAsLeader(rf.currentTerm)
 			return
@@ -752,7 +750,7 @@ func (rf *Raft) applyEntries() {
 					rf.lastApplied = i
 				}
 
-				log.Printf("[%v] apply entry #%v to state machine", rf.me, i)
+				DPrintf("[%v] apply entry #%v to state machine", rf.me, i)
 			} else {
 				break
 			}
@@ -761,7 +759,7 @@ func (rf *Raft) applyEntries() {
 
 		time.Sleep(30 * time.Millisecond)
 	}
-	log.Printf("[%v] stop applyEntries because of death", rf.me)
+	DPrintf("[%v] stop applyEntries because of death", rf.me)
 }
 
 func (rf *Raft) syncEntries(cancelToken *int32) {
@@ -805,7 +803,7 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 			for atomic.LoadInt32(cancelToken) != 1 && !ok {
 				ok = rf.sendAppendEntries(server, &args, &reply)
 				if retryCount++; retryCount >= MAX_RETRY_TIMES {
-					log.Printf("[%v] try %v times to send AppendEntries to [%v], stop sending", rf.me, MAX_RETRY_TIMES, server)
+					DPrintf("[%v] try %v times to send AppendEntries to [%v], stop sending", rf.me, MAX_RETRY_TIMES, server)
 					return
 				}
 			}
@@ -834,7 +832,7 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 	// Case 0: higher term, turn to follower
 	if rf.currentTerm < reply.Term {
 		atomic.StoreInt32(cancelToken, 1) // Cancel proactively to avoid a rare competitive situation
-		log.Printf("[%v] get a reply from higher term %v, cancel leader tasks\n", rf.me, reply.Term)
+		DPrintf("[%v] get a reply from higher term %v, cancel leader tasks\n", rf.me, reply.Term)
 		rf.mu.Unlock()
 		return
 	}
@@ -846,7 +844,7 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 			reply.PrevLogIndex != args.PrevLogIndex && reply.PrevLogIndex < rf.globalLogLen() && reply.PrevLogTerm == rf.log[rf.localIndex(reply.PrevLogIndex)].Term) {
 
 		rf.nextIndex[server] = reply.PrevLogIndex + 1
-		log.Printf("[%v] {case 1,2}: set nextIndex[%v] to reply.PrevLogIndex+1: #%v", rf.me, server, reply.PrevLogIndex+1)
+		DPrintf("[%v] {case 1,2}: set nextIndex[%v] to reply.PrevLogIndex+1: #%v", rf.me, server, reply.PrevLogIndex+1)
 		rf.mu.Unlock()
 		return
 	}
@@ -867,7 +865,7 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 		(reply.PrevLogIndex >= args.PrevLogIndex || // check first to avoid rf.log[rf.localIndex(reply.PrevLogIndex)] out of range
 			(reply.PrevLogIndex < args.PrevLogIndex && reply.PrevLogTerm != rf.log[rf.localIndex(reply.PrevLogIndex)].Term)) {
 		rf.nextIndex[server] = reply.LastApplied + 1
-		log.Printf("[%v] {case3,4}: set nextIndex[%v] to reply.LastApplied+1: #%v", rf.me, server, reply.LastApplied+1)
+		DPrintf("[%v] {case3,4}: set nextIndex[%v] to reply.LastApplied+1: #%v", rf.me, server, reply.LastApplied+1)
 		rf.mu.Unlock()
 		return
 	}
@@ -884,14 +882,14 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 		snapshotReply := InstallSnapshotReply{}
 
 		rf.mu.Unlock()
-		log.Printf("[%v] try to send InstallSnapshot to [%v]", rf.me, server)
+		DPrintf("[%v] try to send InstallSnapshot to [%v]", rf.me, server)
 
 		ok := false
 		retryCount := 0
 		for atomic.LoadInt32(cancelToken) != 1 && !ok {
 			ok = rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
 			if retryCount++; retryCount >= MAX_RETRY_TIMES {
-				log.Printf("[%v] try %v times to send InstallSnapshot to [%v] but failed, stop sending", rf.me, MAX_RETRY_TIMES, server)
+				DPrintf("[%v] try %v times to send InstallSnapshot to [%v] but failed, stop sending", rf.me, MAX_RETRY_TIMES, server)
 				return
 			}
 		}
@@ -902,20 +900,20 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 		rf.mu.Lock()
 		if rf.currentTerm < snapshotReply.Term {
 			atomic.StoreInt32(cancelToken, 1) // Cancel proactively to avoid a rare competitive situation
-			log.Printf("[%v] InstallSnapshot but get a reply from higher term %v, cancel leader tasks\n", rf.me, snapshotReply.Term)
+			DPrintf("[%v] InstallSnapshot but get a reply from higher term %v, cancel leader tasks\n", rf.me, snapshotReply.Term)
 			rf.mu.Unlock()
 			return
 		}
 		rf.nextIndex[server] = snapshotArgs.LastIncludedIndex + 1
 
-		log.Printf("[%v] send InstallSnapshot to [%v] successfully", rf.me, server)
+		DPrintf("[%v] send InstallSnapshot to [%v] successfully", rf.me, server)
 		rf.mu.Unlock()
 		return
 	}
 
 	// unreachable, for debug
-	log.Printf("args: %+v", args)
-	log.Printf("reply: %+v", reply)
+	DPrintf("args: %+v", args)
+	DPrintf("reply: %+v", reply)
 	log.Fatalf("[%v] reach unreachable in Raft.syncEntries", rf.me)
 }
 
@@ -946,7 +944,7 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 		}
 		if newCommitIndex < rf.globalLogLen() && rf.log[rf.localIndex(newCommitIndex)].Term == rf.currentTerm {
 			if rf.commitIndex != newCommitIndex {
-				log.Printf("[%v] committed #%v", rf.me, newCommitIndex)
+				DPrintf("[%v] committed #%v", rf.me, newCommitIndex)
 			}
 			rf.commitIndex = newCommitIndex
 		}
@@ -977,7 +975,7 @@ func (rf *Raft) serveAsLeader(term int) {
 
 		if atomic.LoadInt32(&cancelToken) == 1 || rf.killed() || rf.state != RS_Leader || rf.currentTerm != term {
 			atomic.StoreInt32(&cancelToken, 1)
-			log.Printf("[%v] lose it's power in term %v or dead, cancel all leader tasks", rf.me, term)
+			DPrintf("[%v] lose it's power in term %v or dead, cancel all leader tasks", rf.me, term)
 			rf.mu.Unlock()
 			return
 		}
@@ -1026,9 +1024,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.snapshot = make([]byte, 0)
 	rf.readPersist(persister.ReadRaftState())
 
-	log.SetOutput(io.Discard)
-	log.SetOutput(os.Stdout)
-	log.Printf("[%v] start in Term %v", rf.me, rf.currentTerm)
+	DPrintf("[%v] start in Term %v", rf.me, rf.currentTerm)
 
 	rf.mu.Lock()
 	go func() { // start server, use goroutine to fast return
@@ -1039,7 +1035,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			// applyCh will receive ApplyMsg only after Make() is done
 			// So we need to start goroutine to send ApplyMsg
 			// Took me about 3 hours to find this problem
-			log.Printf("[%v] try to rebuild state machine from snapshot", rf.me)
+			DPrintf("[%v] try to rebuild state machine from snapshot", rf.me)
 			rf.applyCh <- ApplyMsg{
 				CommandValid:  false,
 				SnapshotValid: true,
@@ -1051,7 +1047,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			rf.lastApplied = rf.snapshotIndex
 			rf.log[0].Term = rf.snapshotTerm
 
-			log.Printf("[%v] rebuild state machine from snapshot", rf.me)
+			DPrintf("[%v] rebuild state machine from snapshot", rf.me)
 		}
 
 		// Volatile state on leaders
