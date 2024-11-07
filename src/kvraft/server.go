@@ -1,12 +1,14 @@
 package kvraft
 
 import (
-	"6.5840/labgob"
-	"6.5840/labrpc"
-	"6.5840/raft"
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"6.5840/labgob"
+	"6.5840/labrpc"
+	"6.5840/raft"
 )
 
 const Debug = false
@@ -18,11 +20,11 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+	OpNum           int64
+	OpType          int
+	OpGetArgs       GetArgs       // vaild if OpType is "Get"
+	OpPutAppendArgs PutAppendArgs // vaild if OpType is "Put" or "Append"
 }
 
 type KVServer struct {
@@ -34,20 +36,189 @@ type KVServer struct {
 
 	maxraftstate int // snapshot if log grows this big
 
-	// Your definitions here.
+	mp    map[string]string
+	opnum int64
+	log   []int64 // only record OpNum, index start with 1
 }
 
-
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+
+	DPrintf("[Server][%v] receive request: Get(%v)", kv.me, args.Key)
+
+	kv.mu.Lock()
+	op := Op{
+		OpNum:     kv.opnum,
+		OpType:    OT_GET,
+		OpGetArgs: *args,
+	}
+
+	// well, should Get() need to reach agreement?
+	// Hints say yes, but...
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ERR_NotLeader
+		DPrintf("[Server][%v] refuse to request because it is not leader", kv.me)
+		kv.mu.Unlock()
+		return
+	}
+	kv.opnum += 1
+	kv.mu.Unlock()
+
+	startTime := time.Now()
+	for !kv.killed() {
+		kv.mu.Lock()
+		if index <= len(kv.log)-1 {
+			if kv.log[index] == op.OpNum {
+				reply.Err = ERR_OK
+				reply.Value = kv.mp[args.Key]
+				DPrintf("[Server][%v] finish op #%v: Get(%v)", kv.me, op.OpNum, args.Key)
+			} else if kv.log[index] != op.OpNum {
+				reply.Err = ERR_FailedToCommit
+				DPrintf("[Server][%v] failed to commit op %v: Get(%v)", kv.me, op.OpNum, args.Key)
+			}
+
+			kv.mu.Unlock()
+			return
+		}
+		kv.mu.Unlock()
+
+		if time.Since(startTime) > 100*time.Millisecond {
+			reply.Err = ERR_CommitTimeout
+			DPrintf("[Server][%v] commit timeout op #%v: Get(%v)", kv.me, op.OpNum, args.Key)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	DPrintf("[Server][%v] receive request: Put(%v, %v)", kv.me, args.Key, args.Value)
+
+	kv.mu.Lock()
+	op := Op{
+		OpNum:           kv.opnum,
+		OpType:          OT_PUT,
+		OpPutAppendArgs: *args,
+	}
+
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ERR_NotLeader
+		DPrintf("[Server][%v] refuse to request because it is not leader", kv.me)
+		kv.mu.Unlock()
+		return
+	}
+	kv.opnum += 1
+	kv.mu.Unlock()
+
+	startTime := time.Now()
+	for !kv.killed() {
+		kv.mu.Lock()
+		if index <= len(kv.log)-1 {
+			if kv.log[index] == op.OpNum {
+				reply.Err = ERR_OK
+				DPrintf("[Server][%v] finish op #%v: Put(%v, %v)", kv.me, op.OpNum, args.Key, args.Value)
+			} else if kv.log[index] != op.OpNum {
+				reply.Err = ERR_FailedToCommit
+				DPrintf("[Server][%v] failed to commit op #%v: Put(%v, %v)", kv.me, op.OpNum, args.Key, args.Value)
+			}
+
+			kv.mu.Unlock()
+			return
+		}
+		kv.mu.Unlock()
+
+		if time.Since(startTime) > 100*time.Millisecond {
+			reply.Err = ERR_CommitTimeout
+			DPrintf("[Server][%v] commit timeout op #%v: Append(%v, %v)", kv.me, op.OpNum, args.Key, args.Value)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+
+	DPrintf("[Server][%v] receive request: Appent(%v, %v)", kv.me, args.Key, args.Value)
+
+	kv.mu.Lock()
+	op := Op{
+		OpNum:           kv.opnum,
+		OpType:          OT_APPEND,
+		OpPutAppendArgs: *args,
+	}
+
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ERR_NotLeader
+		DPrintf("[Server][%v] refuse request because it is not leader", kv.me)
+		kv.mu.Unlock()
+		return
+	}
+	kv.opnum += 1
+	kv.mu.Unlock()
+
+	startTime := time.Now()
+	for !kv.killed() {
+		kv.mu.Lock()
+		if index <= len(kv.log)-1 {
+			if kv.log[index] == op.OpNum {
+				reply.Err = ERR_OK
+				DPrintf("[Server][%v] finish op #%v: Append(%v, %v)", kv.me, op.OpNum, args.Key, args.Value)
+			} else if kv.log[index] != op.OpNum {
+				reply.Err = ERR_FailedToCommit
+				DPrintf("[Server][%v] failed to commit op #%v: Append(%v, %v)", kv.me, op.OpNum, args.Key, args.Value)
+			}
+
+			kv.mu.Unlock()
+			return
+		}
+		kv.mu.Unlock()
+
+		if time.Since(startTime) > 100*time.Millisecond {
+			reply.Err = ERR_CommitTimeout
+			DPrintf("[Server][%v] commit timeout op #%v: Append(%v, %v)", kv.me, op.OpNum, args.Key, args.Value)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (kv *KVServer) handleApplyMsg() {
+	for !kv.killed() {
+		select {
+		case applyMsg := <-kv.applyCh:
+			if applyMsg.CommandValid {
+				kv.mu.Lock()
+
+				op := applyMsg.Command.(Op)
+				if len(kv.log) != applyMsg.CommandIndex {
+					log.Fatalf("[Server][%v] apply out of order", kv.me)
+					kv.mu.Unlock()
+					continue
+				}
+
+				kv.log = append(kv.log, op.OpNum)
+				switch op.OpType {
+				case OT_GET:
+					// nop
+				case OT_PUT:
+					kv.mp[op.OpPutAppendArgs.Key] = op.OpPutAppendArgs.Value
+				case OT_APPEND:
+					kv.mp[op.OpPutAppendArgs.Key] = kv.mp[op.OpPutAppendArgs.Key] + op.OpPutAppendArgs.Value
+				default:
+					log.Fatalf("[Server][%v] wrong switch value", kv.me)
+				}
+				DPrintf("[Server][%v] apply op #%v", kv.me, op.OpNum)
+				kv.mu.Unlock()
+			} else if applyMsg.SnapshotValid {
+				// TODO: snapshot
+				time.Sleep(0)
+			}
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -90,12 +261,14 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 
-	// You may need initialization code here.
-
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-	// You may need initialization code here.
+	kv.mp = make(map[string]string)
+	kv.log = make([]int64, 0)
+	kv.log = append(kv.log, 0) // add an initial log to make log start with 1
+
+	go kv.handleApplyMsg()
 
 	return kv
 }

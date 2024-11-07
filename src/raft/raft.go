@@ -757,7 +757,7 @@ func (rf *Raft) applyEntries() {
 		}
 		rf.mu.Unlock()
 
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(TM_ApplyCheck)
 	}
 	DPrintf("[%v] stop applyEntries because of death", rf.me)
 }
@@ -949,7 +949,7 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 			rf.commitIndex = newCommitIndex
 		}
 		rf.mu.Unlock()
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(TM_CommitCheck)
 	}
 }
 
