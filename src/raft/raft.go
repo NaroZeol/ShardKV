@@ -1062,12 +1062,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		// start applyEntries goroutine to apply committed entries
 		go rf.applyEntries()
 
-		if rf.state == RS_Leader {
-			go rf.serveAsLeader(rf.currentTerm)
-		}
+		// if rf.state == RS_Leader {
+		// 	go rf.serveAsLeader(rf.currentTerm)
+		// }
 
-		// // Always start as follower
-		// rf.state = RS_Follower
+		// Always start as follower
+		rf.state = RS_Follower
 
 		rf.mu.Unlock()
 	}()

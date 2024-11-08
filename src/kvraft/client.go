@@ -9,9 +9,9 @@ import (
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
-	// You will have to modify this struct.
-	id     int64
-	leader int
+	id      int64
+	leader  int
+	reqNum  int64
 }
 
 func nrand() int64 {
@@ -26,6 +26,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.servers = servers
 	ck.id = nrand()
 	ck.leader = 0
+	ck.reqNum = 0
 
 	return ck
 }
@@ -42,10 +43,12 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
 	args := GetArgs{
-		Key: key,
-		Id:  ck.id,
+		Key:    key,
+		Id:     ck.id,
+		ReqNum: ck.reqNum,
 	}
 	reply := GetReply{}
+	ck.reqNum += 1
 
 	serverNum := ck.leader
 	for ; ; serverNum = (serverNum + 1) % len(ck.servers) { // emm, is serial request ok ?
@@ -53,7 +56,7 @@ func (ck *Clerk) Get(key string) string {
 		ok := ck.servers[serverNum].Call("KVServer."+"Get", &args, &reply)
 		if ok && reply.Err == "" {
 			ck.leader = serverNum
-			DPrintf("[Client][%v] Get(%v) sucessfully, Value: %v", ck.id, key, reply.Value)
+			DPrintf("[Client][%v] Get(%v) from Server [%v] sucessfully, Value: %v", ck.id, key, serverNum, reply.Value)
 			break
 		}
 
@@ -61,7 +64,9 @@ func (ck *Clerk) Get(key string) string {
 			DPrintf("[Client][%v] failed to connect to server %v", ck.id, serverNum)
 			continue
 		}
-		DPrintf("[Client][%v] server [%v] reply with err: %v", ck.id, serverNum, reply.Err)
+		if reply.Err != ERR_NotLeader { // ignore error: not leader
+			DPrintf("[Client][%v] server [%v] reply with err: %v", ck.id, serverNum, reply.Err)
+		}
 	}
 
 	return reply.Value
@@ -77,11 +82,13 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args := PutAppendArgs{
-		Key:   key,
-		Value: value,
-		Id:    ck.id,
+		Key:    key,
+		Value:  value,
+		Id:     ck.id,
+		ReqNum: ck.reqNum,
 	}
 	reply := PutAppendReply{}
+	ck.reqNum += 1
 
 	serverNum := ck.leader
 	for ; ; serverNum = (serverNum + 1) % len(ck.servers) { // emm, is serial request ok ?
@@ -89,7 +96,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ok := ck.servers[serverNum].Call("KVServer."+op, &args, &reply)
 		if ok && reply.Err == "" {
 			ck.leader = serverNum
-			DPrintf("[Client][%v] PutAppend(%v, %v) sucessfully", ck.id, key, value)
+			DPrintf("[Client][%v] PutAppend(%v, %v) to Server [%v] sucessfully", ck.id, key, value, serverNum)
 			break
 		}
 
@@ -97,7 +104,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			DPrintf("[Client][%v] failed to connect to server %v", ck.id, serverNum)
 			continue
 		}
-		DPrintf("[Client][%v] server [%v] reply with err: %v", ck.id, serverNum, reply.Err)
+		if reply.Err != ERR_NotLeader { // ignore error: not leader
+			DPrintf("[Client][%v] server [%v] reply with err: %v", ck.id, serverNum, reply.Err)
+		}
 	}
 }
 

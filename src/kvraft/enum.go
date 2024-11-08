@@ -10,7 +10,14 @@ const (
 
 // Op type
 const (
-	OT_GET = iota
-	OT_PUT
-	OT_APPEND
+	OT_GET    = "Get"
+	OT_PUT    = "Put"
+	OT_APPEND = "Append"
+)
+
+// Op status
+const (
+	OPS_COMMITING = iota
+	OPS_OK
+	OPS_FAILED
 )
