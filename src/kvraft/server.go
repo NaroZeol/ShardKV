@@ -21,17 +21,18 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 type Session struct {
-	CurrOp Op
+	LastOp *Op
+	CurrOp *Op
 }
 
 type Op struct {
-	OpType          string
-	OpIndex         int
-	OpTerm          int
-	OpGetArgs       GetArgs       // vaild if OpType is "Get"
-	OpPutAppendArgs PutAppendArgs // vaild if OpType is "Put" or "Append"
-	ReqNum          int64
-	CkId            int64
+	OpType  string
+	OpIndex int
+	OpNum   int64
+	OpKey   string
+	OpValue string // vaild if OpType is OT_Put or OT_Append
+	ReqNum  int64
+	CkId    int64
 }
 
 type KVServer struct {
@@ -46,29 +47,29 @@ type KVServer struct {
 	mp         map[string]string
 	ckSessions map[int64]*Session
 	opnum      int64
-	log        []int // only record Opterm, index start with 1
+	log        []int64 // only record Opnum, index start with 1
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
-	kv.handlePutAppendRPC(args, reply, OT_GET)
+	kv.handleNormalRPC(args, reply, OT_GET)
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
-	kv.handlePutAppendRPC(args, reply, OT_PUT)
+	kv.handleNormalRPC(args, reply, OT_PUT)
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
-	kv.handlePutAppendRPC(args, reply, OT_APPEND)
+	kv.handleNormalRPC(args, reply, OT_APPEND)
 }
 
-func (kv *KVServer) handlePutAppendRPC(args GenericArgs, reply GenericReply, opType string) {
+func (kv *KVServer) handleNormalRPC(args GenericArgs, reply GenericReply, opType string) {
 	if opType != OT_GET {
 		DPrintf("[Server][%v] receive request: %v(%v, %v)", kv.me, opType, args.(*PutAppendArgs).Key, args.(*PutAppendArgs).Value)
 	} else if opType == OT_GET {
 		DPrintf("[Server][%v] receive request: Get(%v)", kv.me, args.(*GetArgs).Key)
 	}
 	kv.mu.Lock()
-	if kv.ckSessions[args.getId()] != nil { // not fisrt communication
+	if kv.ckSessions[args.getId()] != nil && kv.ckSessions[args.getId()].CurrOp != nil { // not fisrt communication
 		if kv.ckSessions[args.getId()].CurrOp.ReqNum > args.getReqNum() { // is an old request
 			reply.setErr(ERR_OK)
 			DPrintf("[Server][%v] completed request, return OK", kv.me)
@@ -80,43 +81,43 @@ func (kv *KVServer) handlePutAppendRPC(args GenericArgs, reply GenericReply, opT
 			kv.waittingForCommit(args, reply, opType)
 			return
 		}
-	}
-
-	term, isLeader := kv.rf.GetState()
-	if !isLeader {
-		reply.setErr(ERR_NotLeader)
-		DPrintf("[Server][%v] refuse to request because it is not leader", kv.me)
-		kv.mu.Unlock()
-		return
+	} else if kv.ckSessions[args.getId()] == nil { // first communication
+		kv.ckSessions[args.getId()] = &Session{}
 	}
 
 	op := Op{}
 	if opType != OT_GET {
 		op = Op{
-			OpType:          opType,
-			OpTerm:          term,
-			OpPutAppendArgs: *args.(*PutAppendArgs),
-			ReqNum:          args.getReqNum(),
+			OpType:  opType,
+			OpNum:   kv.opnum,
+			OpKey:   args.(*PutAppendArgs).Key,
+			OpValue: args.(*PutAppendArgs).Value,
+			CkId:    args.getId(),
+			ReqNum:  args.getReqNum(),
 		}
 	} else if opType == OT_GET {
 		op = Op{
-			OpType:    OT_GET,
-			OpTerm:    term,
-			OpGetArgs: *args.(*GetArgs),
-			ReqNum:    args.getReqNum(),
+			OpType:  OT_GET,
+			OpNum:   kv.opnum,
+			OpKey:   args.(*GetArgs).Key,
+			OpValue: "", // unuse
+			CkId:    args.getId(),
+			ReqNum:  args.getReqNum(),
 		}
 	}
-	index, xterm, xisLeader := kv.rf.Start(op)
-	if !xisLeader || xterm != term || index == -1 {
-		DPrintf("[Server][%v] failed to Start()", kv.me)
+
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.setErr(ERR_NotLeader)
+		DPrintf("[Server][%v] failed to Start(), not a leader", kv.me)
 		kv.mu.Unlock()
 		return
+	} else {
+		DPrintf("[Server][%v] Start #%v", kv.me, index)
 	}
 	op.OpIndex = index
 	kv.opnum += 1
-	kv.ckSessions[args.getId()] = &Session{
-		CurrOp: op,
-	}
+	kv.ckSessions[args.getId()].CurrOp = &op
 	kv.mu.Unlock()
 
 	kv.waittingForCommit(args, reply, opType)
@@ -128,7 +129,7 @@ func (kv *KVServer) waittingForCommit(args GenericArgs, reply GenericReply, opTy
 		kv.mu.Lock()
 		op := kv.ckSessions[args.getId()].CurrOp
 		if op.OpIndex <= len(kv.log)-1 {
-			if kv.log[op.OpIndex] == op.OpTerm {
+			if kv.log[op.OpIndex] == op.OpNum {
 				reply.setErr(ERR_OK)
 				if opType != OT_GET {
 					DPrintf("[Server][%v] finish op #%v: %v(%v, %v)", kv.me, op.OpIndex, opType, args.(*PutAppendArgs).Key, args.(*PutAppendArgs).Value)
@@ -136,7 +137,7 @@ func (kv *KVServer) waittingForCommit(args GenericArgs, reply GenericReply, opTy
 					reply.(*GetReply).Value = kv.mp[args.(*GetArgs).Key]
 					DPrintf("[Server][%v] finish op #%v: Get(%v)", kv.me, op.OpIndex, args.(*GetArgs).Key)
 				}
-			} else if kv.log[op.OpIndex] != op.OpTerm {
+			} else if kv.log[op.OpIndex] != op.OpNum {
 				reply.setErr(ERR_FailedToCommit)
 				DPrintf("[Server][%v] failed to commit op %v", kv.me, op.OpIndex)
 			}
@@ -146,7 +147,7 @@ func (kv *KVServer) waittingForCommit(args GenericArgs, reply GenericReply, opTy
 		}
 		kv.mu.Unlock()
 
-		if time.Since(startTime) > 100*time.Millisecond {
+		if time.Since(startTime) > 200*time.Millisecond {
 			reply.setErr(ERR_CommitTimeout)
 			DPrintf("[Server][%v] commit timeout op #%v", kv.me, op.OpIndex)
 			return
@@ -167,17 +168,26 @@ func (kv *KVServer) handleApplyMsg() {
 					log.Fatalf("[Server][%v] apply out of order", kv.me)
 				}
 
-				kv.log = append(kv.log, op.OpTerm)
-				DPrintf("[Server][%v] apply op #%v", kv.me, op.OpIndex)
+				kv.log = append(kv.log, op.OpNum)
+				if kv.ckSessions[op.CkId] == nil {
+					kv.ckSessions[op.CkId] = &Session{}
+				}
+				// stable operation, don't change state machine
+				if kv.ckSessions[op.CkId].LastOp != nil && kv.ckSessions[op.CkId].LastOp.ReqNum >= op.ReqNum {
+					DPrintf("[Server][%v] stable operation #%v, do not change state machine", kv.me, applyMsg.CommandIndex)
+					kv.mu.Unlock()
+					continue
+				}
+				kv.ckSessions[op.CkId].LastOp = &op
 				switch op.OpType {
 				case OT_GET:
-					// nop
+					DPrintf("[Server][%v] apply op #%v: Get(%v)", kv.me, applyMsg.CommandIndex, op.OpKey)
 				case OT_PUT:
-					kv.mp[op.OpPutAppendArgs.Key] = op.OpPutAppendArgs.Value
-					DPrintf("[Server][%v] #%v: apply Put(%v, %v)", kv.me, op.OpIndex, op.OpPutAppendArgs.Key, op.OpPutAppendArgs.Value)
+					kv.mp[op.OpKey] = op.OpValue
+					DPrintf("[Server][%v] apply op #%v: Put(%v, %v)", kv.me, applyMsg.CommandIndex, op.OpKey, op.OpValue)
 				case OT_APPEND:
-					kv.mp[op.OpPutAppendArgs.Key] = kv.mp[op.OpPutAppendArgs.Key] + op.OpPutAppendArgs.Value
-					DPrintf("[Server][%v] #%v: apply Append(%v, %v)", kv.me, op.OpIndex, op.OpPutAppendArgs.Key, op.OpPutAppendArgs.Value)
+					kv.mp[op.OpKey] = kv.mp[op.OpKey] + op.OpValue
+					DPrintf("[Server][%v] apply op #%v: Append(%v, %v)", kv.me, applyMsg.CommandIndex, op.OpKey, op.OpValue)
 				default:
 					log.Fatalf("[Server][%v] wrong switch value", kv.me)
 				}
@@ -204,6 +214,7 @@ func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
+	DPrintf("[Server][%v] Killed", kv.me)
 }
 
 func (kv *KVServer) killed() bool {
@@ -237,7 +248,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.mp = make(map[string]string)
 	kv.ckSessions = make(map[int64]*Session)
-	kv.log = make([]int, 0)
+	kv.log = make([]int64, 0)
 	kv.log = append(kv.log, 0) // add an initial log to make log start with 1
 
 	go kv.handleApplyMsg()
