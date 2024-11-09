@@ -802,7 +802,7 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 			retryCount := 0
 			for atomic.LoadInt32(cancelToken) != 1 && !ok {
 				ok = rf.sendAppendEntries(server, &args, &reply)
-				if retryCount++; retryCount >= MAX_RETRY_TIMES {
+				if retryCount++; retryCount > MAX_RETRY_TIMES {
 					DPrintf("[%v] try %v times to send AppendEntries to [%v], stop sending", rf.me, MAX_RETRY_TIMES, server)
 					return
 				}
@@ -942,7 +942,7 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 
 			N++
 		}
-		if newCommitIndex < rf.globalLogLen() && rf.log[rf.localIndex(newCommitIndex)].Term == rf.currentTerm {
+		if newCommitIndex < rf.globalLogLen() {
 			if rf.commitIndex != newCommitIndex {
 				DPrintf("[%v] committed #%v", rf.me, newCommitIndex)
 			}
