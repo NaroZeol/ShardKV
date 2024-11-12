@@ -88,7 +88,8 @@ type Raft struct {
 	lastHeartBeat time.Time
 
 	// Apply
-	applyCh chan ApplyMsg
+	applyCh    chan ApplyMsg
+	applyQueue ApplyQueue
 
 	cond sync.Cond
 }
@@ -249,7 +250,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.snapshotTerm = rf.log[0].Term
 	rf.persist()
 
-	rf.lastApplied = prevIndex
+	// rf.lastApplied = prevIndex
 	// rf.commitIndex = prevIndex
 	rf.log[0].Type = LT_Noop
 	rf.log[0].Index = prevIndex
@@ -500,35 +501,25 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			Command: nil,
 		})
 	}
-	if rf.lastApplied <= args.LastIncludedInternal {
-		rf.lastApplied = args.LastIncludedInternal
-	}
-	if rf.commitIndex <= args.LastIncludedInternal {
-		rf.commitIndex = args.LastIncludedInternal
-	}
+
 	rf.state = RS_Follower
 	rf.snapshot = args.Data
 	rf.snapshotIndex = args.LastIncludedIndex
 	rf.snapshotTerm = args.LastIncludedTerm
 	rf.persist()
 
-	rf.mu.Unlock()
+	rf.lastApplied = args.LastIncludedInternal
+	rf.commitIndex = args.LastIncludedInternal
+
 	// reset state machine
-	rf.applyCh <- ApplyMsg{
+	rf.applyQueue.Clean()
+	rf.applyQueue.Enqueue(ApplyMsg{
 		CommandValid:  false,
 		Snapshot:      rf.snapshot,
 		SnapshotValid: true,
 		SnapshotIndex: rf.snapshotIndex,
 		SnapshotTerm:  rf.snapshotTerm,
-	}
-
-	rf.mu.Lock()
-	if rf.lastApplied <= args.LastIncludedInternal {
-		rf.lastApplied = args.LastIncludedInternal
-	}
-	if rf.commitIndex <= args.LastIncludedInternal {
-		rf.commitIndex = args.LastIncludedInternal
-	}
+	})
 	rf.mu.Unlock()
 
 	DPrintf("[%v] install snapshot up to #%v (external index #%v) successfully!", rf.me, args.LastIncludedInternal, args.LastIncludedIndex)
@@ -672,7 +663,7 @@ func (rf *Raft) ticker() {
 		rf.mu.Unlock()
 		// pause for a random amount of time
 		// milliseconds.
-		ms := (rand.Int63() % int64(TM_RandomWaitingTime))
+		ms := (rand.Int63()%int64(TM_RandomWaitingTime) + int64(30*time.Millisecond))
 		time.Sleep(time.Duration(ms))
 	}
 }
@@ -785,29 +776,28 @@ func (rf *Raft) election(cancelToken *int32) {
 }
 
 func (rf *Raft) applyEntries() {
+	go func() {
+		for !rf.killed() {
+			for rf.applyQueue.Size() != 0 && !rf.killed() {
+				rf.applyCh <- rf.applyQueue.Front()
+				rf.applyQueue.Dequeue()
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
 	for !rf.killed() {
 		rf.mu.Lock()
 		for {
 			i := rf.lastApplied + 1
 			if i <= rf.commitIndex && i < rf.globalLogLen() && rf.localIndex(i) > 0 && rf.log[rf.localIndex(i)].Type == LT_Normal {
-				applyMsg := ApplyMsg{
+				rf.applyQueue.Enqueue(ApplyMsg{
 					CommandValid:  true,
 					Command:       rf.log[rf.localIndex(i)].Command,
 					CommandIndex:  rf.externalIndex(i),
 					SnapshotValid: false,
-				}
-
-				// no lock to protect, fix for crash test
-				// which applyCh will refuse to accept applyMsg when calling Snapshot
-				// which make program choke if sending message across channel while holding the lock
-				rf.mu.Unlock()
-				rf.applyCh <- applyMsg
-
-				rf.mu.Lock()
-				if i == rf.lastApplied+1 { // if InstallSnapshot change the rf.lastApplied, ignore update
-					rf.lastApplied = i
-				}
-
+				})
+				rf.lastApplied = i
 				DPrintf("[%v] apply entry #%v to state machine (external index #%v)", rf.me, i, rf.externalIndex(i))
 			} else if i <= rf.commitIndex && i < rf.globalLogLen() && rf.localIndex(i) > 0 && rf.log[rf.localIndex(i)].Type == LT_Noop {
 				rf.lastApplied = i
@@ -1081,6 +1071,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.lastHeartBeat = time.Now()
 	rf.applyCh = applyCh
+	rf.applyQueue = ApplyQueue{}
 	rf.cond = *sync.NewCond(&rf.mu)
 
 	// initialize from state persisted before a crash
