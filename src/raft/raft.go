@@ -779,8 +779,10 @@ func (rf *Raft) applyEntries() {
 	go func() {
 		for !rf.killed() {
 			for rf.applyQueue.Size() != 0 && !rf.killed() {
-				rf.applyCh <- rf.applyQueue.Front()
+				applyMsg := rf.applyQueue.Front()
 				rf.applyQueue.Dequeue()
+
+				rf.applyCh <- applyMsg
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
