@@ -109,7 +109,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 		reply = PutAppendReply{}
 		ok := ck.servers[serverNum].Call("KVServer."+op, &args, &reply)
-		if ok && reply.Err == "" {
+		if ok && reply.Err == ERR_OK {
 			ck.leader = serverNum
 			DPrintf("[Client][%v] PutAppend(%v, %v) to Server [%v] sucessfully", ck.id, key, value, serverNum)
 			break

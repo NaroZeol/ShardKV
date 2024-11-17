@@ -11,7 +11,7 @@ import (
 	"6.5840/raft"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -147,7 +147,7 @@ func (kv *KVServer) waittingForCommit(args GenericArgs, reply GenericReply, opTy
 		}
 		kv.mu.Unlock()
 
-		if time.Since(startTime) > 200*time.Millisecond {
+		if time.Since(startTime) > 100*time.Millisecond {
 			reply.setErr(ERR_CommitTimeout)
 			DPrintf("[Server][%v] commit timeout op #%v", kv.me, op.OpIndex)
 			return
@@ -157,47 +157,42 @@ func (kv *KVServer) waittingForCommit(args GenericArgs, reply GenericReply, opTy
 }
 
 func (kv *KVServer) handleApplyMsg() {
-	for !kv.killed() {
-		select {
-		case applyMsg := <-kv.applyCh:
-			if applyMsg.CommandValid {
-				kv.mu.Lock()
+	for applyMsg := range kv.applyCh {
+		if applyMsg.CommandValid {
+			kv.mu.Lock()
 
-				op := applyMsg.Command.(Op)
-				if len(kv.log) != applyMsg.CommandIndex {
-					log.Fatalf("[Server][%v] apply out of order", kv.me)
-				}
-
-				kv.log = append(kv.log, op.OpNum)
-				if kv.ckSessions[op.CkId] == nil {
-					kv.ckSessions[op.CkId] = &Session{}
-				}
-				// stable operation, don't change state machine
-				if kv.ckSessions[op.CkId].LastOp != nil && kv.ckSessions[op.CkId].LastOp.ReqNum >= op.ReqNum {
-					DPrintf("[Server][%v] stable operation #%v, do not change state machine", kv.me, applyMsg.CommandIndex)
-					kv.mu.Unlock()
-					continue
-				}
-				kv.ckSessions[op.CkId].LastOp = &op
-				switch op.OpType {
-				case OT_GET:
-					DPrintf("[Server][%v] apply op #%v: Get(%v)", kv.me, applyMsg.CommandIndex, op.OpKey)
-				case OT_PUT:
-					kv.mp[op.OpKey] = op.OpValue
-					DPrintf("[Server][%v] apply op #%v: Put(%v, %v)", kv.me, applyMsg.CommandIndex, op.OpKey, op.OpValue)
-				case OT_APPEND:
-					kv.mp[op.OpKey] = kv.mp[op.OpKey] + op.OpValue
-					DPrintf("[Server][%v] apply op #%v: Append(%v, %v)", kv.me, applyMsg.CommandIndex, op.OpKey, op.OpValue)
-				default:
-					log.Fatalf("[Server][%v] wrong switch value", kv.me)
-				}
-				kv.mu.Unlock()
-			} else if applyMsg.SnapshotValid {
-				// TODO: snapshot
-				time.Sleep(0)
+			op := applyMsg.Command.(Op)
+			if len(kv.log) != applyMsg.CommandIndex {
+				log.Fatalf("[Server][%v] apply out of order", kv.me)
 			}
-		default:
-			time.Sleep(10 * time.Millisecond)
+
+			kv.log = append(kv.log, op.OpNum)
+			if kv.ckSessions[op.CkId] == nil {
+				kv.ckSessions[op.CkId] = &Session{}
+			}
+			// stable operation, don't change state machine
+			if kv.ckSessions[op.CkId].LastOp != nil && kv.ckSessions[op.CkId].LastOp.ReqNum >= op.ReqNum {
+				DPrintf("[Server][%v] stable operation #%v, do not change state machine", kv.me, applyMsg.CommandIndex)
+				kv.mu.Unlock()
+				continue
+			}
+			kv.ckSessions[op.CkId].LastOp = &op
+			switch op.OpType {
+			case OT_GET:
+				DPrintf("[Server][%v] apply op #%v: Get(%v)", kv.me, applyMsg.CommandIndex, op.OpKey)
+			case OT_PUT:
+				kv.mp[op.OpKey] = op.OpValue
+				DPrintf("[Server][%v] apply op #%v: Put(%v, %v)", kv.me, applyMsg.CommandIndex, op.OpKey, op.OpValue)
+			case OT_APPEND:
+				kv.mp[op.OpKey] = kv.mp[op.OpKey] + op.OpValue
+				DPrintf("[Server][%v] apply op #%v: Append(%v, %v)", kv.me, applyMsg.CommandIndex, op.OpKey, op.OpValue)
+			default:
+				log.Fatalf("[Server][%v] wrong switch value", kv.me)
+			}
+			kv.mu.Unlock()
+		} else if applyMsg.SnapshotValid {
+			// TODO: snapshot
+			time.Sleep(0)
 		}
 	}
 }
@@ -213,7 +208,8 @@ func (kv *KVServer) handleApplyMsg() {
 func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
-	// Your code here, if desired.
+
+	// close(kv.applyCh) // Emm...Let GC to close maybe better
 	DPrintf("[Server][%v] Killed", kv.me)
 }
 
