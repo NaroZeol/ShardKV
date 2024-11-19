@@ -90,6 +90,7 @@ type Raft struct {
 	// Apply
 	applyCh    chan ApplyMsg
 	applyQueue ApplyQueue
+	stopApply  int64
 
 	cond sync.Cond
 }
@@ -460,8 +461,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
-	rf.mu.Lock()
+	atomic.StoreInt64(&rf.stopApply, 1)
+	defer atomic.StoreInt64(&rf.stopApply, 0)
 
+	rf.mu.Lock()
 	DPrintf("[%v] receive InstallSnapshot from [%v]", rf.me, args.LeaderId)
 
 	reply.Term = rf.currentTerm
@@ -512,14 +515,14 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.commitIndex = args.LastIncludedInternal
 
 	// reset state machine
-	rf.applyQueue.Clean()
-	rf.applyQueue.Enqueue(ApplyMsg{
+	rf.applyCh <- ApplyMsg{
 		CommandValid:  false,
-		Snapshot:      rf.snapshot,
+		Snapshot:      args.Data,
 		SnapshotValid: true,
-		SnapshotIndex: rf.snapshotIndex,
-		SnapshotTerm:  rf.snapshotTerm,
-	})
+		SnapshotIndex: args.LastIncludedIndex,
+		SnapshotTerm:  args.LastIncludedTerm,
+	}
+	rf.applyQueue.Clean()
 	rf.mu.Unlock()
 
 	DPrintf("[%v] install snapshot up to #%v (external index #%v) successfully!", rf.me, args.LastIncludedInternal, args.LastIncludedIndex)
@@ -778,13 +781,17 @@ func (rf *Raft) election(cancelToken *int32) {
 func (rf *Raft) applyEntries() {
 	go func() {
 		for !rf.killed() {
-			for rf.applyQueue.Size() != 0 && !rf.killed() {
+			for rf.applyQueue.Size() != 0 && !rf.killed() && atomic.LoadInt64(&rf.stopApply) != 1 {
 				applyMsg := rf.applyQueue.Front()
 				rf.applyQueue.Dequeue()
 
 				rf.applyCh <- applyMsg
+				if applyMsg.CommandValid {
+					DPrintf("[%v] apply entry #%v to state machine", rf.me, applyMsg.CommandIndex)
+				}
 			}
-			time.Sleep(10 * time.Millisecond)
+			// TODO: use sync.cond
+			time.Sleep(1 * time.Millisecond)
 		}
 	}()
 
@@ -800,10 +807,8 @@ func (rf *Raft) applyEntries() {
 					SnapshotValid: false,
 				})
 				rf.lastApplied = i
-				DPrintf("[%v] apply entry #%v to state machine (external index #%v)", rf.me, i, rf.externalIndex(i))
 			} else if i <= rf.commitIndex && i < rf.globalLogLen() && rf.localIndex(i) > 0 && rf.log[rf.localIndex(i)].Type == LT_Noop {
 				rf.lastApplied = i
-				DPrintf("[%v] ignore to apply no-op entry #%v", rf.me, i)
 			} else {
 				break
 			}
@@ -914,7 +919,7 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 	// S1: 2 2 3 3
 	// S2: 2 2 3
 	// when S1 send #4 to S0
-	if rf.localIndex(reply.LastApplied+1) > 0 &&
+	if rf.localIndex(reply.LastApplied+1) > 0 && rf.localIndex(reply.PrevLogIndex) > 0 &&
 		(reply.PrevLogIndex >= args.PrevLogIndex || // check first to avoid rf.log[rf.localIndex(reply.PrevLogIndex)] out of range
 			(reply.PrevLogIndex < args.PrevLogIndex && reply.PrevLogTerm != rf.log[rf.localIndex(reply.PrevLogIndex)].Term)) {
 		rf.nextIndex[server] = reply.LastApplied + 1
@@ -924,7 +929,7 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 	}
 
 	// Case 5: entries which are needed to send to servers are only existed in snapshot
-	if rf.localIndex(reply.PrevLogIndex+1) <= 0 || rf.localIndex(reply.LastApplied+1) <= 0 {
+	if rf.localIndex(reply.PrevLogIndex+1) <= 0 || rf.localIndex(reply.LastApplied+1) <= 0 || rf.localIndex(reply.PrevLogIndex) <= 0 {
 		snapshotArgs := InstallSnapshotArgs{
 			Term:                 rf.currentTerm,
 			LeaderId:             rf.me,
@@ -1074,6 +1079,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastHeartBeat = time.Now()
 	rf.applyCh = applyCh
 	rf.applyQueue = ApplyQueue{}
+	rf.stopApply = 0
 	rf.cond = *sync.NewCond(&rf.mu)
 
 	// initialize from state persisted before a crash
@@ -1101,6 +1107,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			}
 			rf.commitIndex = rf.internalIndex(rf.snapshotIndex)
 			rf.lastApplied = rf.internalIndex(rf.snapshotIndex)
+			rf.log[0].Index = rf.internalIndex(rf.snapshotIndex)
 			rf.log[0].Term = rf.snapshotTerm
 			rf.log[0].Type = LT_Noop
 
