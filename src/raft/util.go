@@ -6,7 +6,7 @@ import (
 )
 
 // Debugging
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {
@@ -26,11 +26,16 @@ func (aq *ApplyQueue) Enqueue(val ApplyMsg) {
 	aq.queue = append(([]ApplyMsg)(aq.queue), val)
 }
 
-func (aq *ApplyQueue) Dequeue() {
+func (aq *ApplyQueue) Dequeue() (ApplyMsg, bool) {
 	aq.mu.Lock()
 	defer aq.mu.Unlock()
 
+	if len(aq.queue) == 0 {
+		return ApplyMsg{}, false
+	}
+	ret := aq.queue[0]
 	aq.queue = ([]ApplyMsg)(aq.queue)[1:]
+	return ret, true
 }
 
 func (aq *ApplyQueue) Front() ApplyMsg {

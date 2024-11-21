@@ -243,19 +243,24 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	defer rf.mu.Unlock()
 
 	prevSnapshotIndex := rf.snapshotIndex
+
+	if prevSnapshotIndex >= index {
+		DPrintf("[%v] refuse to make snapshot because of more up-to-date snapshotindex", rf.me)
+		return
+	}
+
 	prevIndex := rf.internalIndex(index)
 	DPrintf("[%v] try to create snapshot from #%v to #%v (external #%v to #%v)", rf.me, rf.log[0].Index+1, prevIndex, prevSnapshotIndex, index)
 	rf.log = rf.log[rf.localIndex(prevIndex):]
 	rf.snapshot = snapshot
 	rf.snapshotIndex = index
 	rf.snapshotTerm = rf.log[0].Term
+
+	rf.log[0].Type = LT_Noop
 	rf.persist()
 
 	// rf.lastApplied = prevIndex
 	// rf.commitIndex = prevIndex
-	rf.log[0].Type = LT_Noop
-	rf.log[0].Index = prevIndex
-	rf.log[0].Command = nil
 	DPrintf("[%v] create snapshot from #%v to #%v (external #%v to #%v) successfully", rf.me, rf.log[0].Index+1, prevIndex, prevSnapshotIndex, index)
 }
 
@@ -461,8 +466,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
-	atomic.StoreInt64(&rf.stopApply, 1)
-	defer atomic.StoreInt64(&rf.stopApply, 0)
+	for atomic.LoadInt64(&rf.stopApply) != 0 {
+		time.Sleep(1 * time.Millisecond)
+	}
 
 	rf.mu.Lock()
 	DPrintf("[%v] receive InstallSnapshot from [%v]", rf.me, args.LeaderId)
@@ -494,6 +500,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.log[0].Type = LT_Noop
 		rf.log[0].Term = args.LastIncludedTerm
 		rf.log[0].Command = nil
+		// rf.log[0].Index = args.LastIncludedInternal
 	} else {
 		rf.log = make([]logEntry, 0)
 		// a fill entry to let rf.log start from index 1
@@ -514,15 +521,17 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.lastApplied = args.LastIncludedInternal
 	rf.commitIndex = args.LastIncludedInternal
 
+	atomic.StoreInt64(&rf.stopApply, 1)
+	// unlock rf.mu to avoid a potential loop waitting
 	// reset state machine
-	rf.applyCh <- ApplyMsg{
+	rf.applyQueue.Clean()
+	rf.applyQueue.Enqueue(ApplyMsg{
 		CommandValid:  false,
 		Snapshot:      args.Data,
 		SnapshotValid: true,
 		SnapshotIndex: args.LastIncludedIndex,
 		SnapshotTerm:  args.LastIncludedTerm,
-	}
-	rf.applyQueue.Clean()
+	})
 	rf.mu.Unlock()
 
 	DPrintf("[%v] install snapshot up to #%v (external index #%v) successfully!", rf.me, args.LastIncludedInternal, args.LastIncludedIndex)
@@ -673,7 +682,6 @@ func (rf *Raft) ticker() {
 
 func (rf *Raft) election(cancelToken *int32) {
 	rf.mu.Lock()
-
 	rf.votedFor = &rf.me // vote for self
 	rf.currentTerm = rf.currentTerm + 1
 	rf.persist()
@@ -781,23 +789,24 @@ func (rf *Raft) election(cancelToken *int32) {
 func (rf *Raft) applyEntries() {
 	go func() {
 		for !rf.killed() {
-			for rf.applyQueue.Size() != 0 && !rf.killed() && atomic.LoadInt64(&rf.stopApply) != 1 {
-				applyMsg := rf.applyQueue.Front()
-				rf.applyQueue.Dequeue()
-
-				rf.applyCh <- applyMsg
-				if applyMsg.CommandValid {
-					DPrintf("[%v] apply entry #%v to state machine", rf.me, applyMsg.CommandIndex)
+			for rf.applyQueue.Size() != 0 && !rf.killed() {
+				if applyMsg, ok := rf.applyQueue.Dequeue(); ok {
+					rf.applyCh <- applyMsg
+					if applyMsg.CommandValid {
+						DPrintf("[%v] apply entry #%v to state machine", rf.me, applyMsg.CommandIndex)
+					} else if applyMsg.SnapshotValid {
+						atomic.StoreInt64(&rf.stopApply, 0)
+						DPrintf("[%v] apply snapshot up to #%v to state machine", rf.me, applyMsg.SnapshotIndex)
+					}
 				}
 			}
-			// TODO: use sync.cond
 			time.Sleep(1 * time.Millisecond)
 		}
 	}()
 
 	for !rf.killed() {
 		rf.mu.Lock()
-		for {
+		for atomic.LoadInt64(&rf.stopApply) != 1 {
 			i := rf.lastApplied + 1
 			if i <= rf.commitIndex && i < rf.globalLogLen() && rf.localIndex(i) > 0 && rf.log[rf.localIndex(i)].Type == LT_Normal {
 				rf.applyQueue.Enqueue(ApplyMsg{
@@ -919,8 +928,8 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 	// S1: 2 2 3 3
 	// S2: 2 2 3
 	// when S1 send #4 to S0
-	if rf.localIndex(reply.LastApplied+1) > 0 && rf.localIndex(reply.PrevLogIndex) > 0 &&
-		(reply.PrevLogIndex >= args.PrevLogIndex || // check first to avoid rf.log[rf.localIndex(reply.PrevLogIndex)] out of range
+	if rf.localIndex(reply.LastApplied+1) >= 0 && rf.localIndex(reply.PrevLogIndex) >= 0 &&
+		(reply.PrevLogIndex >= args.PrevLogIndex || reply.PrevLogIndex >= rf.globalLogLen() || // check first to avoid rf.log[rf.localIndex(reply.PrevLogIndex)] out of range
 			(reply.PrevLogIndex < args.PrevLogIndex && reply.PrevLogTerm != rf.log[rf.localIndex(reply.PrevLogIndex)].Term)) {
 		rf.nextIndex[server] = reply.LastApplied + 1
 		DPrintf("[%v] {case3,4}: set nextIndex[%v] to reply.LastApplied+1: #%v", rf.me, server, reply.LastApplied+1)
@@ -929,7 +938,7 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 	}
 
 	// Case 5: entries which are needed to send to servers are only existed in snapshot
-	if rf.localIndex(reply.PrevLogIndex+1) <= 0 || rf.localIndex(reply.LastApplied+1) <= 0 || rf.localIndex(reply.PrevLogIndex) <= 0 {
+	if rf.localIndex(reply.PrevLogIndex+1) < 0 || rf.localIndex(reply.LastApplied+1) < 0 || rf.localIndex(reply.PrevLogIndex) < 0 {
 		snapshotArgs := InstallSnapshotArgs{
 			Term:                 rf.currentTerm,
 			LeaderId:             rf.me,
@@ -1003,7 +1012,7 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 		}
 		if newCommitIndex < rf.globalLogLen() && rf.log[rf.localIndex(newCommitIndex)].Term == rf.currentTerm {
 			if rf.commitIndex != newCommitIndex {
-				DPrintf("[%v] committed #%v", rf.me, newCommitIndex)
+				DPrintf("[%v] committed #%v (external #%v)", rf.me, newCommitIndex, rf.externalIndex(newCommitIndex))
 			}
 			rf.commitIndex = newCommitIndex
 		}
@@ -1105,12 +1114,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				SnapshotTerm:  rf.snapshotTerm,
 				SnapshotIndex: rf.snapshotIndex,
 			}
-			rf.commitIndex = rf.internalIndex(rf.snapshotIndex)
-			rf.lastApplied = rf.internalIndex(rf.snapshotIndex)
-			rf.log[0].Index = rf.internalIndex(rf.snapshotIndex)
-			rf.log[0].Term = rf.snapshotTerm
-			rf.log[0].Type = LT_Noop
+			rf.applyQueue.Clean()
+			// rf.commitIndex = rf.internalIndex(rf.snapshotIndex)
+			// rf.lastApplied = rf.internalIndex(rf.snapshotIndex)
+			// rf.log[0].Index = rf.internalIndex(rf.snapshotIndex)
+			// rf.log[0].Term = rf.snapshotTerm
+			// rf.log[0].Type = LT_Noop
 
+			rf.commitIndex = rf.log[0].Index
+			rf.lastApplied = rf.log[0].Index
 			DPrintf("[%v] rebuild state machine from snapshot", rf.me)
 		}
 
