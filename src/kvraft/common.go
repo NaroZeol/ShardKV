@@ -17,7 +17,8 @@ type PutAppendArgs struct {
 }
 
 type PutAppendReply struct {
-	Err Err
+	Err        Err
+	ServerName int // use for debug
 }
 
 type GetArgs struct {
@@ -27,8 +28,9 @@ type GetArgs struct {
 }
 
 type GetReply struct {
-	Err   Err
-	Value string
+	Err        Err
+	Value      string
+	ServerName int // use for debug
 }
 
 type GenericArgs interface {
@@ -38,6 +40,8 @@ type GenericArgs interface {
 
 type GenericReply interface {
 	setErr(str Err)
+	getErr() Err
+	setServerName(name int)
 }
 
 // func (args GetArgs) getKey() string {
@@ -70,4 +74,20 @@ func (reply *GetReply) setErr(err Err) {
 
 func (reply *PutAppendReply) setErr(err Err) {
 	reply.Err = err
+}
+
+func (reply GetReply) getErr() Err {
+	return reply.Err
+}
+
+func (reply PutAppendReply) getErr() Err {
+	return reply.Err
+}
+
+func (reply *GetReply) setServerName(name int) {
+	reply.ServerName = name
+}
+
+func (reply *PutAppendReply) setServerName(name int) {
+	reply.ServerName = name
 }

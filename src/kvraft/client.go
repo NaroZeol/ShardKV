@@ -9,10 +9,10 @@ import (
 )
 
 type Clerk struct {
-	servers []*labrpc.ClientEnd
-	id      int64
-	leader  int
-	reqNum  int64
+	servers     []*labrpc.ClientEnd
+	id          int64
+	leader      int
+	reqNum      int64
 }
 
 func nrand() int64 {
@@ -61,20 +61,19 @@ func (ck *Clerk) Get(key string) string {
 		retryCount += 1
 
 		reply = GetReply{}
+		DPrintf("[Client][%v] try to send $%v", ck.id, args.ReqNum)
 		ok := ck.servers[serverNum].Call("KVServer."+"Get", &args, &reply)
-		if ok && reply.Err == "" {
+		if ok && reply.Err == ERR_OK {
 			ck.leader = serverNum
-			DPrintf("[Client][%v] Get(%v) from Server [%v] sucessfully, Value: %v", ck.id, key, serverNum, reply.Value)
+			DPrintf("[Client][%v] $%v Get(%v) from Server[%v] sucessfully, Value: %v", ck.id, args.ReqNum, key, reply.ServerName, reply.Value)
 			break
 		}
 
 		if !ok {
-			DPrintf("[Client][%v] failed to connect to server %v", ck.id, serverNum)
+			DPrintf("[Client][%v] $%v failed to connect, try another server", ck.id, args.ReqNum)
 			continue
 		}
-		if reply.Err != ERR_NotLeader { // ignore error: not leader
-			DPrintf("[Client][%v] server [%v] reply with err: %v", ck.id, serverNum, reply.Err)
-		}
+		DPrintf("[Client][%v] $%v Server[%v] reply with err: %v", ck.id, args.ReqNum, reply.ServerName, reply.Err)
 	}
 
 	return reply.Value
@@ -108,20 +107,19 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		retryCount += 1
 
 		reply = PutAppendReply{}
+		DPrintf("[Client][%v] try to send $%v RPC", ck.id, args.ReqNum)
 		ok := ck.servers[serverNum].Call("KVServer."+op, &args, &reply)
 		if ok && reply.Err == ERR_OK {
 			ck.leader = serverNum
-			DPrintf("[Client][%v] PutAppend(%v, %v) to Server [%v] sucessfully", ck.id, key, value, serverNum)
+			DPrintf("[Client][%v] $%v PutAppend(%v, %v) to Server[%v] sucessfully", ck.id, args.ReqNum, key, value, reply.ServerName)
 			break
 		}
 
 		if !ok {
-			DPrintf("[Client][%v] failed to connect to server %v", ck.id, serverNum)
+			DPrintf("[Client][%v] $%v failed to connect, try another server", ck.id, args.ReqNum)
 			continue
 		}
-		if reply.Err != ERR_NotLeader { // ignore error: not leader
-			DPrintf("[Client][%v] server [%v] reply with err: %v", ck.id, serverNum, reply.Err)
-		}
+		DPrintf("[Client][%v] $%v Server[%v] reply with err: %v", ck.id, args.ReqNum, reply.ServerName, reply.Err)
 	}
 }
 
