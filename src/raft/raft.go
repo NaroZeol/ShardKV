@@ -90,7 +90,6 @@ type Raft struct {
 	// Apply
 	applyCh    chan ApplyMsg
 	applyQueue ApplyQueue
-	stopApply  int64
 
 	cond sync.Cond
 }
@@ -229,8 +228,8 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.snapshotIndex = _snapshotIndex
 	rf.snapshotTerm = _snapshotTerm
 
-	rf.lastApplied = _snapshotIndex
-	rf.commitIndex = _snapshotIndex
+	rf.lastApplied = rf.log[0].Index
+	rf.commitIndex = rf.log[0].Index
 	DPrintf("[%v] readPersist succeed, restart in Term %v as state %v", rf.me, rf.currentTerm, rf.state)
 }
 
@@ -466,10 +465,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
-	for atomic.LoadInt64(&rf.stopApply) != 0 {
-		time.Sleep(1 * time.Millisecond)
-	}
-
 	rf.mu.Lock()
 	DPrintf("[%v] receive InstallSnapshot from [%v]", rf.me, args.LeaderId)
 
@@ -500,7 +495,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.log[0].Type = LT_Noop
 		rf.log[0].Term = args.LastIncludedTerm
 		rf.log[0].Command = nil
-		// rf.log[0].Index = args.LastIncludedInternal
+		rf.log[0].Index = args.LastIncludedInternal
 	} else {
 		rf.log = make([]logEntry, 0)
 		// a fill entry to let rf.log start from index 1
@@ -521,7 +516,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.lastApplied = args.LastIncludedInternal
 	rf.commitIndex = args.LastIncludedInternal
 
-	atomic.StoreInt64(&rf.stopApply, 1)
 	// unlock rf.mu to avoid a potential loop waitting
 	// reset state machine
 	rf.applyQueue.Clean()
@@ -795,7 +789,6 @@ func (rf *Raft) applyEntries() {
 					if applyMsg.CommandValid {
 						DPrintf("[%v] apply entry #%v to state machine", rf.me, applyMsg.CommandIndex)
 					} else if applyMsg.SnapshotValid {
-						atomic.StoreInt64(&rf.stopApply, 0)
 						DPrintf("[%v] apply snapshot up to #%v to state machine", rf.me, applyMsg.SnapshotIndex)
 					}
 				}
@@ -806,7 +799,7 @@ func (rf *Raft) applyEntries() {
 
 	for !rf.killed() {
 		rf.mu.Lock()
-		for atomic.LoadInt64(&rf.stopApply) != 1 {
+		for {
 			i := rf.lastApplied + 1
 			if i <= rf.commitIndex && i < rf.globalLogLen() && rf.localIndex(i) > 0 && rf.log[rf.localIndex(i)].Type == LT_Normal {
 				rf.applyQueue.Enqueue(ApplyMsg{
@@ -1088,7 +1081,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastHeartBeat = time.Now()
 	rf.applyCh = applyCh
 	rf.applyQueue = ApplyQueue{}
-	rf.stopApply = 0
 	rf.cond = *sync.NewCond(&rf.mu)
 
 	// initialize from state persisted before a crash
