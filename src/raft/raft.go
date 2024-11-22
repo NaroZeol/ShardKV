@@ -91,7 +91,12 @@ type Raft struct {
 	applyCh    chan ApplyMsg
 	applyQueue ApplyQueue
 
-	cond sync.Cond
+	// Cond
+	// To avoid livelock, signal these conditon variables when heartbeat
+	syncCond    sync.Cond // signal every time new operation start
+	commitCond  sync.Cond // signal every time matchIndex changes
+	enqueueCond sync.Cond // signal every time commitIndex changes
+	applyCond   sync.Cond // signal every time applyQueue changes
 }
 
 // Convert externalIndex to internalIndex
@@ -230,6 +235,7 @@ func (rf *Raft) readPersist(data []byte) {
 
 	rf.lastApplied = rf.log[0].Index
 	rf.commitIndex = rf.log[0].Index
+	rf.enqueueCond.Signal()
 	DPrintf("[%v] readPersist succeed, restart in Term %v as state %v", rf.me, rf.currentTerm, rf.state)
 }
 
@@ -393,6 +399,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				minIndex = rf.globalLogLen() - 1
 			}
 			rf.commitIndex = minIndex
+			rf.enqueueCond.Signal()
 			DPrintf("[%v] update commitIndex to #%v", rf.me, rf.commitIndex)
 		}
 	}
@@ -426,6 +433,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// prefix entries check
 		i := 0
 		for ; i < len(args.Entries) && rf.localIndex(i+rf.lastApplied+1) < len(rf.log); i++ {
+			if rf.localIndex(i+rf.lastApplied+1) < 0 {
+				i = len(args.Entries)
+				break
+			}
 			if args.Entries[i].Term != rf.log[rf.localIndex(i+rf.lastApplied+1)].Term {
 				break
 			}
@@ -488,7 +499,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 
 	// Figure 13 step 6
-	if rf.localIndex(args.LastIncludedInternal) >= 1 &&
+	if rf.localIndex(args.LastIncludedInternal) >= 0 &&
 		rf.localIndex(args.LastIncludedInternal) < len(rf.log) &&
 		args.LastIncludedTerm == rf.log[rf.localIndex(args.LastIncludedInternal)].Term {
 		rf.log = rf.log[rf.localIndex(args.LastIncludedInternal):]
@@ -515,8 +526,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.lastApplied = args.LastIncludedInternal
 	rf.commitIndex = args.LastIncludedInternal
+	rf.enqueueCond.Signal()
 
-	// unlock rf.mu to avoid a potential loop waitting
 	// reset state machine
 	rf.applyQueue.Clean()
 	rf.applyQueue.Enqueue(ApplyMsg{
@@ -526,6 +537,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		SnapshotIndex: args.LastIncludedIndex,
 		SnapshotTerm:  args.LastIncludedTerm,
 	})
+
+	rf.applyCond.Signal()
 	rf.mu.Unlock()
 
 	DPrintf("[%v] install snapshot up to #%v (external index #%v) successfully!", rf.me, args.LastIncludedInternal, args.LastIncludedIndex)
@@ -613,7 +626,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term = rf.currentTerm
 	isLeader = true
 	DPrintf("[%v] leader append entry #%v (external #%v) to its log in term %v", rf.me, newLog.Index, externIndex, term)
-	rf.cond.Signal()
+	rf.syncCond.Signal()
+	rf.commitCond.Signal()
 
 	return externIndex, term, isLeader
 }
@@ -765,9 +779,10 @@ func (rf *Raft) election(cancelToken *int32) {
 				Command: nil,
 			}
 			rf.log = append(rf.log, newLog)
+			rf.persist()
+
 			rf.nextIndex[rf.me] = rf.globalLogLen()
 			rf.matchIndex[rf.me] = rf.globalLogLen() - 1
-			rf.persist()
 			DPrintf("[%v] leader append an empty entry #%v in term %v", rf.me, rf.globalLogLen()-1, rf.currentTerm)
 			rf.mu.Unlock()
 
@@ -783,6 +798,10 @@ func (rf *Raft) election(cancelToken *int32) {
 func (rf *Raft) applyEntries() {
 	go func() {
 		for !rf.killed() {
+			rf.mu.Lock()
+			rf.applyCond.Wait()
+			rf.mu.Unlock()
+
 			for rf.applyQueue.Size() != 0 && !rf.killed() {
 				if applyMsg, ok := rf.applyQueue.Dequeue(); ok {
 					rf.applyCh <- applyMsg
@@ -793,12 +812,12 @@ func (rf *Raft) applyEntries() {
 					}
 				}
 			}
-			time.Sleep(1 * time.Millisecond)
 		}
 	}()
 
 	for !rf.killed() {
 		rf.mu.Lock()
+		rf.enqueueCond.Wait()
 		for {
 			i := rf.lastApplied + 1
 			if i <= rf.commitIndex && i < rf.globalLogLen() && rf.localIndex(i) > 0 && rf.log[rf.localIndex(i)].Type == LT_Normal {
@@ -809,6 +828,7 @@ func (rf *Raft) applyEntries() {
 					SnapshotValid: false,
 				})
 				rf.lastApplied = i
+				rf.applyCond.Signal()
 			} else if i <= rf.commitIndex && i < rf.globalLogLen() && rf.localIndex(i) > 0 && rf.log[rf.localIndex(i)].Type == LT_Noop {
 				rf.lastApplied = i
 			} else {
@@ -816,8 +836,6 @@ func (rf *Raft) applyEntries() {
 			}
 		}
 		rf.mu.Unlock()
-
-		time.Sleep(TM_ApplyCheck)
 	}
 	DPrintf("[%v] stop applyEntries because of death", rf.me)
 }
@@ -878,6 +896,7 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 				rf.nextIndex[server] = newNextIndex          // apply success, update next index
 				if rf.matchIndex[server] <= newNextIndex-1 { //increases monotonically
 					rf.matchIndex[server] = newNextIndex - 1
+					rf.commitCond.Signal()
 				}
 			} else {
 				rf.handleFailedReply(server, &args, &reply, cancelToken)
@@ -985,6 +1004,7 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 			return
 		}
 		rf.mu.Lock()
+		rf.commitCond.Wait()
 		N := rf.commitIndex // name from paper
 		newCommitIndex := N
 		for newCommitIndex < rf.globalLogLen() {
@@ -1008,9 +1028,9 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 				DPrintf("[%v] committed #%v (external #%v)", rf.me, newCommitIndex, rf.externalIndex(newCommitIndex))
 			}
 			rf.commitIndex = newCommitIndex
+			rf.enqueueCond.Signal()
 		}
 		rf.mu.Unlock()
-		time.Sleep(TM_CommitCheck)
 	}
 }
 
@@ -1019,7 +1039,10 @@ func (rf *Raft) heartBeat(cancelToken *int32) {
 		if atomic.LoadInt32(cancelToken) == 1 {
 			return
 		}
-		rf.cond.Signal()
+		rf.syncCond.Signal()
+		rf.commitCond.Signal()
+		rf.enqueueCond.Signal()
+		rf.applyCond.Signal()
 		time.Sleep(TM_HeartBeatInterval)
 	}
 }
@@ -1032,7 +1055,7 @@ func (rf *Raft) serveAsLeader(term int) {
 
 	for {
 		rf.mu.Lock()
-		rf.cond.Wait()
+		rf.syncCond.Wait()
 
 		if atomic.LoadInt32(&cancelToken) == 1 || rf.killed() || rf.state != RS_Leader || rf.currentTerm != term {
 			atomic.StoreInt32(&cancelToken, 1)
@@ -1081,15 +1104,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastHeartBeat = time.Now()
 	rf.applyCh = applyCh
 	rf.applyQueue = ApplyQueue{}
-	rf.cond = *sync.NewCond(&rf.mu)
+	rf.applyCond = *sync.NewCond(&rf.mu)
+	rf.syncCond = *sync.NewCond(&rf.mu)
+	rf.commitCond = *sync.NewCond(&rf.mu)
+	rf.enqueueCond = *sync.NewCond(&rf.mu)
 
 	// initialize from state persisted before a crash
 	rf.snapshot = make([]byte, 0)
-	rf.readPersist(persister.ReadRaftState())
-
-	DPrintf("[%v] start in Term %v", rf.me, rf.currentTerm)
 
 	rf.mu.Lock()
+	rf.readPersist(persister.ReadRaftState())
+	DPrintf("[%v] start in Term %v", rf.me, rf.currentTerm)
+
 	go func() { // start server, use goroutine to fast return
 		if len(rf.snapshot) != 0 {
 			// ********VERY VERY IMPORTANT!!!!!!!!!!!!!!!!!!!!!!!!!*******
@@ -1099,6 +1125,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			// So we need to start goroutine to send ApplyMsg
 			// Took me about 3 hours to find this problem
 			DPrintf("[%v] try to rebuild state machine from snapshot", rf.me)
+			rf.applyQueue.Clean()
 			rf.applyCh <- ApplyMsg{
 				CommandValid:  false,
 				SnapshotValid: true,
@@ -1106,7 +1133,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				SnapshotTerm:  rf.snapshotTerm,
 				SnapshotIndex: rf.snapshotIndex,
 			}
-			rf.applyQueue.Clean()
 			// rf.commitIndex = rf.internalIndex(rf.snapshotIndex)
 			// rf.lastApplied = rf.internalIndex(rf.snapshotIndex)
 			// rf.log[0].Index = rf.internalIndex(rf.snapshotIndex)
@@ -1125,6 +1151,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		}
 		rf.matchIndex = make([]int, len(rf.peers))
 
+		// Always start as follower
+		rf.state = RS_Follower
+
 		// start ticker goroutine to start elections
 		go rf.ticker()
 		// start applyEntries goroutine to apply committed entries
@@ -1133,9 +1162,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		// if rf.state == RS_Leader {
 		// 	go rf.serveAsLeader(rf.currentTerm)
 		// }
-
-		// Always start as follower
-		rf.state = RS_Follower
 
 		rf.mu.Unlock()
 	}()
