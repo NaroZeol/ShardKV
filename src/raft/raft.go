@@ -92,7 +92,7 @@ type Raft struct {
 	applyQueue ApplyQueue
 
 	// Cond
-	// To avoid livelock, signal these conditon variables when heartbeat
+	// To avoid livelock, signal these conditon variables when heartbeat and Kill()
 	syncCond    sync.Cond // signal every time new operation start
 	commitCond  sync.Cond // signal every time matchIndex changes
 	enqueueCond sync.Cond // signal every time commitIndex changes
@@ -363,6 +363,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if len(args.Entries) != 0 {
 		DPrintf("[%v] receive AppendEntries from [%v] in term %v from #%v to #%v\n", rf.me, args.LeaderId, args.Term, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries))
+	} else {
+		DPrintf("[%v] receive heartbeat from [%v] in term %v", rf.me, args.LeaderId, args.Term)
 	}
 
 	// State Synchronization
@@ -643,7 +645,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // should call killed() to check whether it should stop.
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
-	// Your code here, if desired.
+
+	// signal each condition variable after Kill()
+	// to avoid go routine leak
+	rf.syncCond.Signal()
+	rf.applyCond.Signal()
+	rf.commitCond.Signal()
+	rf.enqueueCond.Signal()
 }
 
 func (rf *Raft) killed() bool {
@@ -1151,17 +1159,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		}
 		rf.matchIndex = make([]int, len(rf.peers))
 
-		// Always start as follower
-		rf.state = RS_Follower
+		// // Always start as follower
+		// rf.state = RS_Follower
 
 		// start ticker goroutine to start elections
 		go rf.ticker()
 		// start applyEntries goroutine to apply committed entries
 		go rf.applyEntries()
 
-		// if rf.state == RS_Leader {
-		// 	go rf.serveAsLeader(rf.currentTerm)
-		// }
+		if rf.state == RS_Leader {
+			go rf.serveAsLeader(rf.currentTerm)
+		}
 
 		rf.mu.Unlock()
 	}()
