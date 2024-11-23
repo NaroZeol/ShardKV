@@ -235,6 +235,9 @@ func (rf *Raft) readPersist(data []byte) {
 
 	rf.lastApplied = rf.log[0].Index
 	rf.commitIndex = rf.log[0].Index
+	if rf.localIndex(rf.commitIndex) < 0 {
+		log.Fatal("assert failed 1")
+	}
 	rf.enqueueCond.Signal()
 	DPrintf("[%v] readPersist succeed, restart in Term %v as state %v", rf.me, rf.currentTerm, rf.state)
 }
@@ -423,6 +426,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		// set new commit index
 		updateCommitIndex()
+		if rf.localIndex(rf.commitIndex) < 0 {
+			log.Fatal("assert failed 2")
+		}
 
 		if len(args.Entries) != 0 { // ignore printing heart beat message
 			DPrintf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
@@ -455,6 +461,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		// set new commit index
 		updateCommitIndex()
+		if rf.localIndex(rf.commitIndex) < 0 {
+			log.Fatal("assert failed 3")
+		}
 
 		DPrintf("[%v] receive a fix package from [%v]", rf.me, args.LeaderId)
 		DPrintf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
@@ -528,6 +537,9 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.lastApplied = args.LastIncludedInternal
 	rf.commitIndex = args.LastIncludedInternal
+	if rf.localIndex(rf.commitIndex) < 0 {
+		log.Fatal("assert failed 4")
+	}
 	rf.enqueueCond.Signal()
 
 	// reset state machine
@@ -1008,13 +1020,15 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) commitCheck(cancelToken *int32) {
 	// Commit Check
 	for {
-		if atomic.LoadInt32(cancelToken) == 1 {
+		if atomic.LoadInt32(cancelToken) == 1 || rf.killed() {
 			return
 		}
 		rf.mu.Lock()
 		rf.commitCond.Wait()
 		N := rf.commitIndex // name from paper
 		newCommitIndex := N
+		changed := false
+
 		for newCommitIndex < rf.globalLogLen() {
 			counter := 0
 			for _, index := range rf.matchIndex {
@@ -1025,17 +1039,21 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 
 			if counter >= len(rf.peers)/2+1 {
 				newCommitIndex = N
+				changed = true
 			} else {
 				break
 			}
 
 			N++
 		}
-		if newCommitIndex < rf.globalLogLen() && rf.log[rf.localIndex(newCommitIndex)].Term == rf.currentTerm {
+		if changed && newCommitIndex < rf.globalLogLen() && rf.log[rf.localIndex(newCommitIndex)].Term == rf.currentTerm {
 			if rf.commitIndex != newCommitIndex {
 				DPrintf("[%v] committed #%v (external #%v)", rf.me, newCommitIndex, rf.externalIndex(newCommitIndex))
 			}
 			rf.commitIndex = newCommitIndex
+			if rf.localIndex(N) < 0 {
+				log.Fatal("Assert Failed 5")
+			}
 			rf.enqueueCond.Signal()
 		}
 		rf.mu.Unlock()
@@ -1147,8 +1165,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			// rf.log[0].Term = rf.snapshotTerm
 			// rf.log[0].Type = LT_Noop
 
+			if rf.log[0].Type != LT_Noop {
+				log.Fatal("Assert fail")
+			}
+
 			rf.commitIndex = rf.log[0].Index
 			rf.lastApplied = rf.log[0].Index
+			if rf.localIndex(rf.commitIndex) < 0 {
+				log.Fatal("Assert Fail 6")
+			}
 			DPrintf("[%v] rebuild state machine from snapshot", rf.me)
 		}
 
