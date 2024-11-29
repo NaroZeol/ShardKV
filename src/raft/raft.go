@@ -234,11 +234,6 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.snapshotTerm = _snapshotTerm
 
 	rf.lastApplied = rf.log[0].Index
-	rf.commitIndex = rf.log[0].Index
-	if rf.localIndex(rf.commitIndex) < 0 {
-		log.Fatal("assert failed 1")
-	}
-	rf.enqueueCond.Signal()
 	DPrintf("[%v] readPersist succeed, restart in Term %v as state %v", rf.me, rf.currentTerm, rf.state)
 }
 
@@ -395,18 +390,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	updateCommitIndex := func() {
-		// set new commit index
-		if args.LeaderCommit > rf.commitIndex {
-			minIndex := 0
-			if args.LeaderCommit <= rf.globalLogLen()-1 {
-				minIndex = args.LeaderCommit
-			} else {
-				minIndex = rf.globalLogLen() - 1
-			}
-			rf.commitIndex = minIndex
-			rf.enqueueCond.Signal()
-			DPrintf("[%v] update commitIndex to #%v", rf.me, rf.commitIndex)
-		}
+		rf.commitIndex = args.LeaderCommit
+		rf.enqueueCond.Signal()
+		DPrintf("[%v] update commitIndex to #%v", rf.me, rf.commitIndex)
 	}
 
 	// Log Synchronization
@@ -426,9 +412,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		// set new commit index
 		updateCommitIndex()
-		if rf.localIndex(rf.commitIndex) < 0 {
-			log.Fatal("assert failed 2")
-		}
 
 		if len(args.Entries) != 0 { // ignore printing heart beat message
 			DPrintf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
@@ -461,9 +444,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		// set new commit index
 		updateCommitIndex()
-		if rf.localIndex(rf.commitIndex) < 0 {
-			log.Fatal("assert failed 3")
-		}
 
 		DPrintf("[%v] receive a fix package from [%v]", rf.me, args.LeaderId)
 		DPrintf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
@@ -537,9 +517,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.lastApplied = args.LastIncludedInternal
 	rf.commitIndex = args.LastIncludedInternal
-	if rf.localIndex(rf.commitIndex) < 0 {
-		log.Fatal("assert failed 4")
-	}
 	rf.enqueueCond.Signal()
 
 	// reset state machine
@@ -1025,7 +1002,7 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 		}
 		rf.mu.Lock()
 		rf.commitCond.Wait()
-		N := rf.commitIndex // name from paper
+		N := rf.commitIndex + 1 // name from paper
 		newCommitIndex := N
 		changed := false
 
@@ -1051,9 +1028,6 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 				DPrintf("[%v] committed #%v (external #%v)", rf.me, newCommitIndex, rf.externalIndex(newCommitIndex))
 			}
 			rf.commitIndex = newCommitIndex
-			if rf.localIndex(N) < 0 {
-				log.Fatal("Assert Failed 5")
-			}
 			rf.enqueueCond.Signal()
 		}
 		rf.mu.Unlock()
@@ -1152,28 +1126,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			// Took me about 3 hours to find this problem
 			DPrintf("[%v] try to rebuild state machine from snapshot", rf.me)
 			rf.applyQueue.Clean()
-			rf.applyCh <- ApplyMsg{
+			rf.applyQueue.Enqueue(ApplyMsg{
 				CommandValid:  false,
 				SnapshotValid: true,
 				Snapshot:      rf.snapshot,
 				SnapshotTerm:  rf.snapshotTerm,
 				SnapshotIndex: rf.snapshotIndex,
-			}
-			// rf.commitIndex = rf.internalIndex(rf.snapshotIndex)
-			// rf.lastApplied = rf.internalIndex(rf.snapshotIndex)
-			// rf.log[0].Index = rf.internalIndex(rf.snapshotIndex)
-			// rf.log[0].Term = rf.snapshotTerm
-			// rf.log[0].Type = LT_Noop
-
-			if rf.log[0].Type != LT_Noop {
-				log.Fatal("Assert fail")
-			}
-
-			rf.commitIndex = rf.log[0].Index
+			})
 			rf.lastApplied = rf.log[0].Index
-			if rf.localIndex(rf.commitIndex) < 0 {
-				log.Fatal("Assert Fail 6")
-			}
 			DPrintf("[%v] rebuild state machine from snapshot", rf.me)
 		}
 
@@ -1196,6 +1156,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			go rf.serveAsLeader(rf.currentTerm)
 		}
 
+		rf.applyCond.Signal()
 		rf.mu.Unlock()
 	}()
 
