@@ -127,7 +127,7 @@ func (rf *Raft) internalIndex(externalIndex int) int {
 func (rf *Raft) externalIndex(internalIndex int) int {
 	index := 0
 	tartget := internalIndex - rf.log[0].Index
-	for i := 0; i <= tartget; i++ {
+	for i := 1; i <= tartget; i++ {
 		if rf.log[i].Type != LT_Noop {
 			index += 1
 		}
@@ -246,14 +246,19 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	defer rf.mu.Unlock()
 
 	prevSnapshotIndex := rf.snapshotIndex
+	prevIndex := rf.internalIndex(index)
 
 	if prevSnapshotIndex >= index {
 		DPrintf("[%v] refuse to make snapshot because of more up-to-date snapshotindex", rf.me)
 		return
 	}
 
-	prevIndex := rf.internalIndex(index)
-	DPrintf("[%v] try to create snapshot from #%v to #%v (external #%v to #%v)", rf.me, rf.log[0].Index+1, prevIndex, prevSnapshotIndex, index)
+	if rf.lastApplied < prevIndex {
+		DPrintf("[%v] refuse to make snapshot because rf.lastApplied has changed", rf.me)
+		return
+	}
+
+	DPrintf("[%v] try to create snapshot from #%v to #%v (external #%v to #%v)", rf.me, rf.log[0].Index, prevIndex, prevSnapshotIndex, index)
 	rf.log = rf.log[rf.localIndex(prevIndex):]
 	rf.snapshot = snapshot
 	rf.snapshotIndex = index
@@ -264,7 +269,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	// rf.lastApplied = prevIndex
 	// rf.commitIndex = prevIndex
-	DPrintf("[%v] create snapshot from #%v to #%v (external #%v to #%v) successfully", rf.me, rf.log[0].Index+1, prevIndex, prevSnapshotIndex, index)
+	DPrintf("[%v] create snapshot from #%v to #%v (external #%v to #%v) successfully", rf.me, rf.log[0].Index, prevIndex, prevSnapshotIndex, index)
 }
 
 type RequestVoteArgs struct {
@@ -438,7 +443,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			return
 		}
 
-		rf.log = append(rf.log[:rf.localIndex(args.PrevLogIndex+1)], args.Entries...) // left-closed and right-open interval for slice
+		rf.log = append(rf.log[:rf.localIndex(rf.lastApplied+1)], args.Entries...) // left-closed and right-open interval for slice
 		rf.persist()
 		reply.Success = true
 
@@ -515,8 +520,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.snapshotTerm = args.LastIncludedTerm
 	rf.persist()
 
-	rf.lastApplied = args.LastIncludedInternal
-	rf.commitIndex = args.LastIncludedInternal
+	rf.lastApplied = rf.log[0].Index
+	rf.commitIndex = rf.log[0].Index
 	rf.enqueueCond.Signal()
 
 	// reset state machine
@@ -1023,7 +1028,8 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 
 			N++
 		}
-		if changed && newCommitIndex < rf.globalLogLen() && rf.log[rf.localIndex(newCommitIndex)].Term == rf.currentTerm {
+		if changed && (rf.localIndex(newCommitIndex) < 0 || // if an entry is in snapshot, should we think it is committed?
+			newCommitIndex < rf.globalLogLen() && rf.log[rf.localIndex(newCommitIndex)].Term == rf.currentTerm) {
 			if rf.commitIndex != newCommitIndex {
 				DPrintf("[%v] committed #%v (external #%v)", rf.me, newCommitIndex, rf.externalIndex(newCommitIndex))
 			}
@@ -1099,7 +1105,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Volatile state on all servers
 	rf.commitIndex = 0
-	rf.lastApplied = 0
+	rf.lastApplied = 1 // consider that no-op entry is applied
 
 	rf.lastHeartBeat = time.Now()
 	rf.applyCh = applyCh
