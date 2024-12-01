@@ -87,6 +87,7 @@ type GenericArgs interface {
 
 type GenericReply interface {
 	setErr(str Err)
+	setWrongLeader(wrongLeader bool)
 }
 
 //
@@ -129,14 +130,30 @@ func (reply *JoinReply) setErr(err Err) {
 	reply.Err = err
 }
 
+func (reply *JoinReply) setWrongLeader(wrongLeader bool) {
+	reply.WrongLeader = wrongLeader
+}
+
 func (reply *LeaveReply) setErr(err Err) {
 	reply.Err = err
+}
+
+func (reply *LeaveReply) setWrongLeader(wrongLeader bool) {
+	reply.WrongLeader = wrongLeader
 }
 
 func (reply *MoveReply) setErr(err Err) {
 	reply.Err = err
 }
 
+func (reply *MoveReply) setWrongLeader(wrongLeader bool) {
+	reply.WrongLeader = wrongLeader
+}
+
 func (reply *QueryReply) setErr(err Err) {
 	reply.Err = err
+}
+
+func (reply *QueryReply) setWrongLeader(wrongLeader bool) {
+	reply.WrongLeader = wrongLeader
 }
