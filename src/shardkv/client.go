@@ -37,7 +37,9 @@ type Clerk struct {
 	sm       *shardctrler.Clerk
 	config   shardctrler.Config
 	make_end func(string) *labrpc.ClientEnd
-	// You will have to modify this struct.
+
+	id     int64
+	reqNum int64
 }
 
 // the tester calls MakeClerk.
@@ -51,7 +53,10 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck := new(Clerk)
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.make_end = make_end
-	// You'll have to add code here.
+
+	ck.id = nrand()
+	ck.reqNum = 1
+
 	return ck
 }
 
@@ -60,9 +65,14 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // keeps trying forever in the face of all other errors.
 // You will have to modify this function.
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
-	args.Key = key
+	args := GetArgs{
+		Key:    key,
+		Id:     ck.id,
+		ReqNum: ck.reqNum,
+	}
+	ck.reqNum += 1
 
+	DPrintf("[SKV-C][%v] Get(%v)", ck.id, key)
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
@@ -72,13 +82,18 @@ func (ck *Clerk) Get(key string) string {
 				srv := ck.make_end(servers[si])
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
-				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
+				if ok && (reply.Err == OK || reply.Err == ERR_NoKey) {
+					DPrintf("[SKV-C][%v] $%v Get(%v) sucessfully, value: %v", ck.id, args.ReqNum, key, reply.Value)
 					return reply.Value
 				}
-				if ok && (reply.Err == ErrWrongGroup) {
+				if ok && (reply.Err == ERR_WrongGroup) {
 					break
 				}
 				// ... not ok, or ErrWrongLeader
+				if ok && (reply.Err != OK) {
+					DPrintf("[SKV-C][%v] Server [%v] in Group [%v] reply with error: %v", ck.id, servers[si], gid, reply.Err)
+					continue
+				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -86,17 +101,22 @@ func (ck *Clerk) Get(key string) string {
 		ck.config = ck.sm.Query(-1)
 	}
 
-	return ""
+	// Unreachable
+	// return ""
 }
 
 // shared by Put and Append.
 // You will have to modify this function.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
-
+	args := PutAppendArgs{
+		Key:    key,
+		Value:  value,
+		Op:     op,
+		Id:     ck.id,
+		ReqNum: ck.reqNum,
+	}
+	ck.reqNum += 1
+	DPrintf("[SKV-C][%v] $%v %v(%v, %v)", ck.id, args.ReqNum, op, key, value)
 
 	for {
 		shard := key2shard(key)
@@ -105,14 +125,19 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
 				var reply PutAppendReply
-				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
+				ok := srv.Call("ShardKV."+op, &args, &reply)
 				if ok && reply.Err == OK {
+					DPrintf("[SKV-C][%v] $%v %v(%v, %v) sucessfully", ck.id, args.ReqNum, op, key, value)
 					return
 				}
-				if ok && reply.Err == ErrWrongGroup {
+				if ok && reply.Err == ERR_WrongGroup {
 					break
 				}
 				// ... not ok, or ErrWrongLeader
+				if ok && (reply.Err != OK) {
+					DPrintf("[SKV-C][%v] Server [%v] in Group [%v] reply with error: %v", ck.id, servers[si], gid, reply.Err)
+					continue
+				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)

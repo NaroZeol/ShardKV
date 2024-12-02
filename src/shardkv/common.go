@@ -10,10 +10,18 @@ package shardkv
 //
 
 const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongGroup  = "ErrWrongGroup"
-	ErrWrongLeader = "ErrWrongLeader"
+	OK                 = "OK"
+	ERR_NoKey          = "Not such key"
+	ERR_WrongGroup     = "Wrong group"
+	ERR_WrongLeader    = "Not leader"
+	ERR_CommitTimeout  = "Commit timeout"
+	ERR_FailedToCommit = "Failed to commit"
+)
+
+const (
+	OT_GET    = "Get"
+	OT_PUT    = "Put"
+	OT_APPEND = "Append"
 )
 
 type Err string
@@ -24,9 +32,9 @@ type PutAppendArgs struct {
 	Key   string
 	Value string
 	Op    string // "Put" or "Append"
-	// You'll have to add definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+
+	Id     int64
+	ReqNum int64
 }
 
 type PutAppendReply struct {
@@ -34,11 +42,54 @@ type PutAppendReply struct {
 }
 
 type GetArgs struct {
-	Key string
-	// You'll have to add definitions here.
+	Key    string
+	Id     int64
+	ReqNum int64
 }
 
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+type GenericArgs interface {
+	getId() int64
+	getReqNum() int64
+	getKey() string
+}
+
+type GenericReply interface {
+	setErr(str Err)
+}
+
+func (args GetArgs) getId() int64 {
+	return args.Id
+}
+
+func (args GetArgs) getReqNum() int64 {
+	return args.ReqNum
+}
+
+func (args GetArgs) getKey() string {
+	return args.Key
+}
+
+func (args PutAppendArgs) getId() int64 {
+	return args.Id
+}
+
+func (args PutAppendArgs) getReqNum() int64 {
+	return args.ReqNum
+}
+
+func (args PutAppendArgs) getKey() string {
+	return args.Key
+}
+
+func (reply *GetReply) setErr(err Err) {
+	reply.Err = err
+}
+
+func (reply *PutAppendReply) setErr(err Err) {
+	reply.Err = err
 }
