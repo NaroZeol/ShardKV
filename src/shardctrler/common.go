@@ -28,8 +28,19 @@ type Config struct {
 	Groups map[int][]string // gid -> servers[]
 }
 
+// Errors
 const (
-	OK = "OK"
+	ERR_OK             = "" // no error
+	ERR_FailedToCommit = "Failed to commit"
+	ERR_CommitTimeout  = "Commit timeout"
+)
+
+// Op types
+const (
+	OT_Join  = "Join"
+	OT_Leave = "Leave"
+	OT_Move  = "Move"
+	OT_Query = "Query"
 )
 
 type Err string
