@@ -3,6 +3,7 @@ package shardctrler
 import (
 	"bytes"
 	"log"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -79,6 +80,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 
 func (sc *ShardCtrler) handleNomalRPC(args GenericArgs, reply GenericReply, opType string) {
 	sc.mu.Lock()
+	DPrintf("[SC-S][%v] receive RPC %v: %+v", sc.me, opType, args)
 
 	if session := sc.ckSessions[args.getId()]; session.LastOpVaild && session.LastOp.ReqNum == args.getReqNum() {
 		if op, ok := sc.logRecord[session.LastOpIndex]; ok && op.Number == session.LastOp.Number {
@@ -113,7 +115,7 @@ func (sc *ShardCtrler) handleNomalRPC(args GenericArgs, reply GenericReply, opTy
 		sc.mu.Unlock()
 		return
 	} else {
-		DPrintf("[SC-S][%v] Start  #%v", sc.me, index)
+		DPrintf("[SC-S][%v] Start #%v", sc.me, index)
 	}
 	sc.mu.Unlock()
 
@@ -183,69 +185,103 @@ func (sc *ShardCtrler) rebalance(oldConfig *Config, newConfig *Config) {
 
 	DPrintf("[SC-S][%v] Start rebalance", sc.me)
 	DPrintf("[SC-S][%v] Current Shards: %+v", sc.me, oldConfig.Shards)
-	gid2shards := make(map[int][]int, 0) // gid to shards
-	orphanShards := make([]int, 0)       // shards that do not belong to any gid
+	orphanShards := make([]int, 0) // shards that do not belong to any gid
+	// record gid to shards
+	type GS struct {
+		Gid    int
+		Shards []int
+	}
+	GSs := make([]GS, 0)
+	gid2Index := make(map[int]int) // gid to index of GSs
 
-	// record existed gids in new configuration
 	for gid := range newConfig.Groups {
-		gid2shards[gid] = make([]int, 0)
+		GSs = append(GSs, GS{
+			Gid:    gid,
+			Shards: make([]int, 0),
+		})
+		gid2Index[gid] = len(GSs) - 1
+	}
+
+	if len(GSs) == 0 {
+		// reset to zero if no gid is vaild
+		newConfig.Shards = [NShards]int{0}
+		DPrintf("[SC-S][%v] newShards %+v", sc.me, newConfig.Shards)
+		DPrintf("[SC-S][%v] rebalance completed", sc.me)
+		return
 	}
 
 	// find out orphanShards(do not belong to any gid) in new configuration
+	// or add shardNum to GSs if gid is still vaild in new configruration
 	for shardNum, gid := range oldConfig.Shards {
 		if gid == 0 { // invaild gid
 			orphanShards = append(orphanShards, shardNum)
-		} else if _, ok := gid2shards[gid]; !ok { // old gid does not exist in new configuration
+		} else if _, ok := gid2Index[gid]; !ok { // old gid does not exist in new configuration
 			orphanShards = append(orphanShards, shardNum)
 		} else {
-			gid2shards[gid] = append(gid2shards[gid], shardNum)
+			GSs[gid2Index[gid]].Shards = append(GSs[gid2Index[gid]].Shards, shardNum)
 		}
+	}
+
+	// sort by gid to ensure GSs is in same order on each server
+	sort.Slice(GSs, func(i, j int) bool {
+		return GSs[i].Gid < GSs[j].Gid
+	})
+	for i, gs := range GSs { // sorted by ShardNum to ensure gs.Shards is in same order on each server
+		gs.Shards = sort.IntSlice(gs.Shards)
+		gid2Index[gs.Gid] = i
 	}
 
 	for {
-		// DPrintf("[SC-S][%v] gid2shards: %+v", sc.me, gid2shards)
+		// DPrintf("[SC-S][%v] GSs: %+v", sc.me, GSs)
+		// DPrintf("[SC-S][%v] gid2Index: %+v", sc.me, gid2Index)
 		// DPrintf("[SC-S][%v] orphanShards: %+v", sc.me, orphanShards)
-		minShards := int(1e10)
+		minShardsNum := int(1e10)
 		minGid := 0
-		maxShards := 0
+		maxShardsNum := 0
 		maxGid := 0
 
 		// walk around stupidly
-		// a smarter way is to use heap
-		for gid, shards := range gid2shards { // TODO: fix non-deterministic iteration order
-			if len(shards) <= minShards { // find out which gid has the minimum shards
-				minShards = len(shards)
-				minGid = gid
+		// a smarter way is to use heapm but we only have NShards(10)
+		for _, gs := range GSs {
+			if len(gs.Shards) <= minShardsNum { // find out which gid has the minimum shards
+				minShardsNum = len(gs.Shards)
+				minGid = gs.Gid
 			}
-			if maxShards <= len(shards) { // find out which gid has the maximum shards
-				maxShards = len(shards)
-				maxGid = gid
+			if maxShardsNum <= len(gs.Shards) { // find out which gid has the maximum shards
+				maxShardsNum = len(gs.Shards)
+				maxGid = gs.Gid
 			}
 		}
+		// DPrintf("[SC-S][%v] minGid: %v, maxGid: %v", sc.me, minGid, maxGid)
 
 		// stop condition
-		if maxShards-minShards <= 1 && len(orphanShards) == 0 {
+		if maxShardsNum-minShardsNum <= 1 && len(orphanShards) == 0 {
 			break
 		}
 
+		minShards := GSs[gid2Index[minGid]].Shards
+		maxShards := GSs[gid2Index[maxGid]].Shards
+
 		if len(orphanShards) != 0 {
-			gid2shards[minGid] = append(gid2shards[minGid], orphanShards[len(orphanShards)-1])
+			minShards = append(minShards, orphanShards[len(orphanShards)-1])
 			orphanShards = orphanShards[0 : len(orphanShards)-1]
-			continue // next round
+
+			GSs[gid2Index[minGid]].Shards = minShards
+		} else if maxShardsNum-minShardsNum > 1 {
+			movedShard := maxShards[len(maxShards)-1]
+			maxShards = maxShards[0 : len(maxShards)-1]
+			minShards = append(minShards, movedShard)
+
+			GSs[gid2Index[minGid]].Shards = minShards
+			GSs[gid2Index[maxGid]].Shards = maxShards
 		}
 
-		if maxShards-minShards > 1 {
-			movedShard := gid2shards[maxGid][len(gid2shards[maxGid])-1]
-			gid2shards[maxGid] = gid2shards[maxGid][0 : len(gid2shards[maxGid])-1]
-			gid2shards[minGid] = append(gid2shards[minGid], movedShard)
-			continue // next round
-		}
 	}
 
 	newShards := [NShards]int{0}
-	for gid, shards := range gid2shards {
-		for _, shard := range shards {
-			newShards[shard] = gid
+	for _, gs := range GSs {
+		for _, shard := range gs.Shards {
+			newShards[shard] = gs.Gid
 		}
 	}
 
