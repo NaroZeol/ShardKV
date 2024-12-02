@@ -187,11 +187,8 @@ func (sc *ShardCtrler) successCommit(args GenericArgs, reply GenericReply, opTyp
 func (sc *ShardCtrler) rebalance(oldConfig *Config, newConfig *Config) {
 	// should hold sc.mu
 
-	// DPrintf("[SC-S][%v] Start rebalance", sc.me)
-	// DPrintf("[SC-S][%v] Old Shards: %+v", sc.me, oldConfig.Shards)
 	orphanShards := make([]int, 0) // shards that do not belong to any gid
-	// record gid to shards
-	type GS struct {
+	type GS struct {               // Gid and Shards
 		Gid    int
 		Shards []int
 	}
@@ -209,8 +206,6 @@ func (sc *ShardCtrler) rebalance(oldConfig *Config, newConfig *Config) {
 	if len(GSs) == 0 {
 		// reset to zero if no gid is vaild
 		newConfig.Shards = [NShards]int{0}
-		// DPrintf("[SC-S][%v] New Shards: %+v", sc.me, newConfig.Shards)
-		// DPrintf("[SC-S][%v] rebalance completed", sc.me)
 		return
 	}
 
@@ -230,15 +225,12 @@ func (sc *ShardCtrler) rebalance(oldConfig *Config, newConfig *Config) {
 	sort.Slice(GSs, func(i, j int) bool {
 		return GSs[i].Gid < GSs[j].Gid
 	})
-	for i, gs := range GSs { // sorted by ShardNum to ensure gs.Shards is in same order on each server
+	for i, gs := range GSs { // sort by ShardNum to ensure gs.Shards is in same order on each server
 		gs.Shards = sort.IntSlice(gs.Shards)
 		gid2Index[gs.Gid] = i
 	}
 
 	for {
-		// DPrintf("[SC-S][%v] GSs: %+v", sc.me, GSs)
-		// DPrintf("[SC-S][%v] gid2Index: %+v", sc.me, gid2Index)
-		// DPrintf("[SC-S][%v] orphanShards: %+v", sc.me, orphanShards)
 		minShardsNum := int(1e10)
 		minGid := 0
 		maxShardsNum := 0
@@ -256,7 +248,6 @@ func (sc *ShardCtrler) rebalance(oldConfig *Config, newConfig *Config) {
 				maxGid = gs.Gid
 			}
 		}
-		// DPrintf("[SC-S][%v] minGid: %v, maxGid: %v", sc.me, minGid, maxGid)
 
 		// stop condition
 		if maxShardsNum-minShardsNum <= 1 && len(orphanShards) == 0 {
@@ -266,12 +257,12 @@ func (sc *ShardCtrler) rebalance(oldConfig *Config, newConfig *Config) {
 		minShards := GSs[gid2Index[minGid]].Shards
 		maxShards := GSs[gid2Index[maxGid]].Shards
 
-		if len(orphanShards) != 0 {
+		if len(orphanShards) != 0 { // add an orphanShard to minShards
 			minShards = append(minShards, orphanShards[len(orphanShards)-1])
 			orphanShards = orphanShards[0 : len(orphanShards)-1]
 
 			GSs[gid2Index[minGid]].Shards = minShards
-		} else if maxShardsNum-minShardsNum > 1 {
+		} else if maxShardsNum-minShardsNum > 1 { // move a shard from maxShards to minShards
 			movedShard := maxShards[len(maxShards)-1]
 			maxShards = maxShards[0 : len(maxShards)-1]
 			minShards = append(minShards, movedShard)
@@ -290,8 +281,6 @@ func (sc *ShardCtrler) rebalance(oldConfig *Config, newConfig *Config) {
 	}
 
 	newConfig.Shards = newShards
-	// DPrintf("[SC-S][%v] New shards: %+v", sc.me, newConfig.Shards)
-	// DPrintf("[SC-S][%v] rebalance completed", sc.me)
 }
 
 func (sc *ShardCtrler) applyOp(op Op) {
