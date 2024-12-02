@@ -3,7 +3,6 @@ package shardctrler
 // Errors
 const (
 	ERR_OK             = "" // no error
-	ERR_NotLeader      = "Not leader"
 	ERR_FailedToCommit = "Failed to commit"
 	ERR_CommitTimeout  = "Commit timeout"
 )

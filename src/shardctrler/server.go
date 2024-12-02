@@ -133,6 +133,8 @@ func (sc *ShardCtrler) waittingForCommit(op Op, index int, args GenericArgs, rep
 				sc.mu.Unlock()
 				return
 			} else if ok && finishedOp.Number != op.Number {
+				DPrintf("[SC-S][%v] Failed to commit op #%v, wrong Op.number", sc.me, index)
+				reply.setErr(ERR_FailedToCommit)
 				sc.mu.Unlock()
 				return
 			}
@@ -140,6 +142,8 @@ func (sc *ShardCtrler) waittingForCommit(op Op, index int, args GenericArgs, rep
 		sc.mu.Unlock()
 
 		if time.Since(startTime) > 30*time.Millisecond {
+			DPrintf("[SC-S][%v] Failed to commit op #%v, timeout", sc.me, index)
+			reply.setErr(ERR_CommitTimeout)
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -183,8 +187,8 @@ func (sc *ShardCtrler) successCommit(args GenericArgs, reply GenericReply, opTyp
 func (sc *ShardCtrler) rebalance(oldConfig *Config, newConfig *Config) {
 	// should hold sc.mu
 
-	DPrintf("[SC-S][%v] Start rebalance", sc.me)
-	DPrintf("[SC-S][%v] Current Shards: %+v", sc.me, oldConfig.Shards)
+	// DPrintf("[SC-S][%v] Start rebalance", sc.me)
+	// DPrintf("[SC-S][%v] Old Shards: %+v", sc.me, oldConfig.Shards)
 	orphanShards := make([]int, 0) // shards that do not belong to any gid
 	// record gid to shards
 	type GS struct {
@@ -205,8 +209,8 @@ func (sc *ShardCtrler) rebalance(oldConfig *Config, newConfig *Config) {
 	if len(GSs) == 0 {
 		// reset to zero if no gid is vaild
 		newConfig.Shards = [NShards]int{0}
-		DPrintf("[SC-S][%v] newShards %+v", sc.me, newConfig.Shards)
-		DPrintf("[SC-S][%v] rebalance completed", sc.me)
+		// DPrintf("[SC-S][%v] New Shards: %+v", sc.me, newConfig.Shards)
+		// DPrintf("[SC-S][%v] rebalance completed", sc.me)
 		return
 	}
 
@@ -286,8 +290,8 @@ func (sc *ShardCtrler) rebalance(oldConfig *Config, newConfig *Config) {
 	}
 
 	newConfig.Shards = newShards
-	DPrintf("[SC-S][%v] newShards %+v", sc.me, newConfig.Shards)
-	DPrintf("[SC-S][%v] rebalance completed", sc.me)
+	// DPrintf("[SC-S][%v] New shards: %+v", sc.me, newConfig.Shards)
+	// DPrintf("[SC-S][%v] rebalance completed", sc.me)
 }
 
 func (sc *ShardCtrler) applyOp(op Op) {
@@ -300,58 +304,69 @@ func (sc *ShardCtrler) applyOp(op Op) {
 
 		oldConfig := sc.configs[len(sc.configs)-1]
 
-		newConfig := Config{}
-		newConfig.Groups = make(map[int][]string)
+		newConfig := Config{
+			Groups: make(map[int][]string),
+			Shards: oldConfig.Shards,
+			Num:    oldConfig.Num + 1,
+		}
 		for key, value := range oldConfig.Groups {
 			newConfig.Groups[key] = value
 		}
 
 		// apply op
-		newConfig.Num = oldConfig.Num + 1
 		for key, value := range joinArgs.Servers {
 			newConfig.Groups[key] = value
 		}
 		sc.rebalance(&sc.configs[len(sc.configs)-1], &newConfig)
 
 		sc.configs = append(sc.configs, newConfig)
+		// DPrintf("[SC-S][%v] Old Config: %+v", sc.me, oldConfig)
+		// DPrintf("[SC-S][%v] New Config: %+v", sc.me, newConfig)
 	case OT_Leave:
 		leaveArgs := op.Args.(LeaveArgs)
 		DPrintf("[SC-S][%v] Apply Op: Leave (%+v)", sc.me, leaveArgs.GIDs)
 
 		oldConfig := sc.configs[len(sc.configs)-1]
 
-		newConfig := Config{}
-		newConfig.Groups = make(map[int][]string)
+		newConfig := Config{
+			Groups: make(map[int][]string),
+			Shards: oldConfig.Shards,
+			Num:    oldConfig.Num + 1,
+		}
 		for key, value := range oldConfig.Groups {
 			newConfig.Groups[key] = value
 		}
 
 		// apply op
-		newConfig.Num = oldConfig.Num + 1
 		for _, gid := range leaveArgs.GIDs {
 			delete(newConfig.Groups, gid)
 		}
 		sc.rebalance(&sc.configs[len(sc.configs)-1], &newConfig)
 
 		sc.configs = append(sc.configs, newConfig)
+		// DPrintf("[SC-S][%v] Old Config: %+v", sc.me, oldConfig)
+		// DPrintf("[SC-S][%v] New Config: %+v", sc.me, newConfig)
 	case OT_Move:
 		moveArgs := op.Args.(MoveArgs)
 		DPrintf("[SC-S][%v] Apply Op: Move %+v", sc.me, moveArgs)
 
 		oldConfig := sc.configs[len(sc.configs)-1]
 
-		newConfig := Config{}
-		newConfig.Groups = make(map[int][]string)
+		newConfig := Config{
+			Groups: make(map[int][]string),
+			Shards: oldConfig.Shards,
+			Num:    oldConfig.Num + 1,
+		}
 		for key, value := range oldConfig.Groups {
 			newConfig.Groups[key] = value
 		}
 
 		// apply op
-		newConfig.Num = oldConfig.Num + 1
 		newConfig.Shards[moveArgs.Shard] = moveArgs.GID
 
 		sc.configs = append(sc.configs, newConfig)
-		DPrintf("[SC-S][%v] Apply Op: Move %+v", sc.me, moveArgs)
+		// DPrintf("[SC-S][%v] Old Config: %+v", sc.me, oldConfig)
+		// DPrintf("[SC-S][%v] New Config: %+v", sc.me, newConfig)
 	case OT_Query:
 		queryArgs := op.Args.(QueryArgs)
 		// do nothing for Query
