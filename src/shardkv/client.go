@@ -91,7 +91,7 @@ func (ck *Clerk) Get(key string) string {
 				}
 				// ... not ok, or ErrWrongLeader
 				if ok && (reply.Err != OK) {
-					DPrintf("[SKV-C][%v] Server [%v] in Group [%v] reply with error: %v", ck.id, servers[si], gid, reply.Err)
+					DPrintf("[SKV-C][%v] Server [%v][%v] reply with error: %v", ck.id, gid, servers[si], reply.Err)
 					continue
 				}
 			}
@@ -135,7 +135,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				}
 				// ... not ok, or ErrWrongLeader
 				if ok && (reply.Err != OK) {
-					DPrintf("[SKV-C][%v] Server [%v] in Group [%v] reply with error: %v", ck.id, servers[si], gid, reply.Err)
+					DPrintf("[SKV-C][%v] Server [%v][%v] reply with error: %v", ck.id, gid, servers[si], reply.Err)
 					continue
 				}
 			}

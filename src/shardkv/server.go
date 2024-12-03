@@ -80,12 +80,13 @@ func (kv *ShardKV) Append(args *PutAppendArgs, reply *PutAppendReply) {
 }
 
 func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType string) {
-	DPrintf("[SKV-S][%v] receive RPC %v: %+v", kv.me, opType, args)
+	DPrintf("[SKV-S][%v][%v] receive RPC %v: %+v", kv.gid, kv.me, opType, args)
 
 	config := kv.mck.Query(-1)
 	if config.Shards[key2shard(args.getKey())] != kv.gid {
 		reply.setErr(ERR_WrongGroup)
-		DPrintf("[SKV-S][%v] Group [%v] reply with error: %v", kv.me, kv.gid, ERR_WrongGroup)
+		DPrintf("[SKV-S][%v][%v] Group [%v] reply with error: %v", kv.gid, kv.me, kv.gid, ERR_WrongGroup)
+		kv.mu.Unlock()
 		return
 	}
 
@@ -113,16 +114,18 @@ func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType 
 		op.Args = *args.(*PutAppendArgs)
 	case OT_APPEND:
 		op.Args = *args.(*PutAppendArgs)
+	case OT_ChangeConfig:
+		op.Args = *args.(*ChangeConfigArgs)
 	}
 
 	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.setErr(ERR_WrongLeader)
-		DPrintf("[SKV-S][%v] failed to Start(), not a leader", kv.me)
+		DPrintf("[SKV-S][%v][%v] failed to Start(), not a leader", kv.gid, kv.me)
 		kv.mu.Unlock()
 		return
 	} else {
-		DPrintf("[SKV-S][%v] Start #%v", kv.me, index)
+		DPrintf("[SKV-S][%v][%v] Start #%v", kv.gid, kv.me, index)
 	}
 	kv.mu.Unlock()
 
@@ -140,7 +143,7 @@ func (kv *ShardKV) waittingForCommit(op Op, index int, args GenericArgs, reply G
 				kv.mu.Unlock()
 				return
 			} else if ok && finishedOp.Number != op.Number {
-				DPrintf("[SKV-S][%v] Failed to commit op #%v, wrong Op.number", kv.me, index)
+				DPrintf("[SKV-S][%v][%v] Failed to commit op #%v, wrong Op.number", kv.gid, kv.me, index)
 				reply.setErr(ERR_FailedToCommit)
 				kv.mu.Unlock()
 				return
@@ -149,7 +152,7 @@ func (kv *ShardKV) waittingForCommit(op Op, index int, args GenericArgs, reply G
 		kv.mu.Unlock()
 
 		if time.Since(startTime) > 30*time.Millisecond {
-			DPrintf("[SKV-S][%v] Failed to commit op #%v, timeout", kv.me, index)
+			DPrintf("[SKV-S][%v][%v] Failed to commit op #%v, timeout", kv.gid, kv.me, index)
 			reply.setErr(ERR_CommitTimeout)
 			return
 		}
@@ -185,17 +188,17 @@ func (kv *ShardKV) applyOp(op Op) {
 	case OT_GET:
 		// do nothing
 		getArgs := op.Args.(GetArgs)
-		DPrintf("[SKV-S][%v] Apply Op: Get(%v)", kv.me, getArgs.Key)
+		DPrintf("[SKV-S][%v][%v] Apply Op: Get(%v)", kv.gid, kv.me, getArgs.Key)
 	case OT_PUT:
 		// TODO: maybe some check
 		putArgs := op.Args.(PutAppendArgs)
 		kv.mp[putArgs.Key] = putArgs.Value
-		DPrintf("[SKV-S][%v] Apply Op: Put(%v, %v)", kv.me, putArgs.Key, putArgs.Value)
+		DPrintf("[SKV-S][%v][%v] Apply Op: Put(%v, %v)", kv.gid, kv.me, putArgs.Key, putArgs.Value)
 	case OT_APPEND:
 		// TODO: maybe some check
 		appendArgs := op.Args.(PutAppendArgs)
 		kv.mp[appendArgs.Key] = kv.mp[appendArgs.Key] + appendArgs.Value
-		DPrintf("[SKV-S][%v] Apply Op: Append(%v, %v)", kv.me, appendArgs.Key, appendArgs.Value)
+		DPrintf("[SKV-S][%v][%v] Apply Op: Append(%v, %v)", kv.gid, kv.me, appendArgs.Key, appendArgs.Value)
 	}
 }
 
@@ -205,7 +208,7 @@ func (kv *ShardKV) handleApplyMsg() {
 			kv.mu.Lock()
 			op := applyMsg.Command.(Op)
 			if kv.lastApplied+1 != applyMsg.CommandIndex {
-				DPrintf("[SKV-S][%v] apply out of order", kv.me)
+				DPrintf("[SKV-S][%v][%v] apply out of order", kv.gid, kv.me)
 			}
 
 			kv.logRecord[applyMsg.CommandIndex] = op
@@ -214,7 +217,7 @@ func (kv *ShardKV) handleApplyMsg() {
 			// stable operation, don't change state machine
 			if session := kv.ckSessions[op.CkId]; session.LastOpVaild && session.LastOpIndex < applyMsg.CommandIndex &&
 				op.ReqNum <= session.LastOp.ReqNum {
-				DPrintf("[SKV-S][%v] stable operation #%v for [%v] ($%v <= $%v), do not change state machine", kv.me, applyMsg.CommandIndex, op.CkId, op.ReqNum, session.LastOp.ReqNum)
+				DPrintf("[SKV-S][%v][%v] stable operation #%v for [%v] ($%v <= $%v), do not change state machine", kv.gid, kv.me, applyMsg.CommandIndex, op.CkId, op.ReqNum, session.LastOp.ReqNum)
 
 				session.LastOp = op
 				session.LastOpIndex = applyMsg.CommandIndex
@@ -233,7 +236,7 @@ func (kv *ShardKV) handleApplyMsg() {
 			kv.applyOp(op)
 
 			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
-				DPrintf("[SKV-S][%v] %v >= %v try to create snapshot up to #%v", kv.me, kv.persister.RaftStateSize(), kv.maxraftstate, applyMsg.CommandIndex)
+				DPrintf("[SKV-S][%v][%v] %v >= %v try to create snapshot up to #%v", kv.gid, kv.me, kv.persister.RaftStateSize(), kv.maxraftstate, applyMsg.CommandIndex)
 				for key := range kv.logRecord {
 					if kv.confirmMap[key] {
 						delete(kv.logRecord, key)
@@ -251,12 +254,12 @@ func (kv *ShardKV) handleApplyMsg() {
 				encoder.Encode(newSnapshot)
 
 				kv.rf.Snapshot(applyMsg.CommandIndex, buffer.Bytes())
-				DPrintf("[SKV-S][%v] create snapshot up to #%v successfully", kv.me, applyMsg.CommandIndex)
+				DPrintf("[SKV-S][%v][%v] create snapshot up to #%v successfully", kv.gid, kv.me, applyMsg.CommandIndex)
 			}
 			kv.mu.Unlock()
 		} else if applyMsg.SnapshotValid {
 			kv.mu.Lock()
-			DPrintf("[SKV-S][%v] try to apply snapshot up to #%v", kv.me, applyMsg.SnapshotIndex)
+			DPrintf("[SKV-S][%v][%v] try to apply snapshot up to #%v", kv.gid, kv.me, applyMsg.SnapshotIndex)
 			buffer := bytes.NewBuffer(applyMsg.Snapshot)
 			decoder := labgob.NewDecoder(buffer)
 			snapshot := Snapshot{}
@@ -279,7 +282,7 @@ func (kv *ShardKV) handleApplyMsg() {
 func (kv *ShardKV) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
-	DPrintf("[SKV-S][%v] Killed", kv.me)
+	DPrintf("[SKV-S][%v][%v] Killed", kv.gid, kv.me)
 }
 
 func (kv *ShardKV) killed() bool {
