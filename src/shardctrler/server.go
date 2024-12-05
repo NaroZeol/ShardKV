@@ -13,10 +13,19 @@ import (
 	"6.5840/raft"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
+		log.Printf(format, a...)
+	}
+	return
+}
+
+const ConfigChangeTrace = true
+
+func ConfigChangeTracePrintf(format string, a ...interface{}) (n int, err error) {
+	if ConfigChangeTrace {
 		log.Printf(format, a...)
 	}
 	return
@@ -181,6 +190,12 @@ func (sc *ShardCtrler) successCommit(args GenericArgs, reply GenericReply, opTyp
 		queryReply.Config = sc.configs[num]
 	default:
 		log.Fatal("Wrong switch in successCommit()")
+	}
+
+	if ConfigChangeTrace && opType != OT_Query {
+		ConfigChangeTracePrintf("Config Changed:")
+		ConfigChangeTracePrintf("Old Config: %+v", sc.configs[len(sc.configs)-2])
+		ConfigChangeTracePrintf("New Config: %+v", sc.configs[len(sc.configs)-1])
 	}
 }
 

@@ -4,12 +4,17 @@ package shardctrler
 // Shardctrler clerk.
 //
 
-import "6.5840/labrpc"
-import "time"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
+	"sync"
+	"time"
+
+	"6.5840/labrpc"
+)
 
 type Clerk struct {
+	mu      sync.Mutex
 	servers []*labrpc.ClientEnd
 	id      int64
 	reqNum  int64
@@ -32,12 +37,14 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 }
 
 func (ck *Clerk) Query(num int) Config {
+	ck.mu.Lock()
 	args := &QueryArgs{
 		Num:    num,
 		ReqNum: ck.reqNum,
 		Id:     ck.id,
 	}
 	ck.reqNum += 1
+	ck.mu.Unlock()
 
 	for {
 		// try each known server.
@@ -55,12 +62,14 @@ func (ck *Clerk) Query(num int) Config {
 }
 
 func (ck *Clerk) Join(servers map[int][]string) {
+	ck.mu.Lock()
 	args := &JoinArgs{
 		Servers: servers,
 		Id:      ck.id,
 		ReqNum:  ck.reqNum,
 	}
 	ck.reqNum += 1
+	ck.mu.Unlock()
 
 	for {
 		// try each known server.
@@ -78,12 +87,14 @@ func (ck *Clerk) Join(servers map[int][]string) {
 }
 
 func (ck *Clerk) Leave(gids []int) {
+	ck.mu.Lock()
 	args := &LeaveArgs{
 		GIDs:   gids,
 		Id:     ck.id,
 		ReqNum: ck.reqNum,
 	}
 	ck.reqNum += 1
+	ck.mu.Unlock()
 
 	for {
 		// try each known server.
@@ -101,6 +112,7 @@ func (ck *Clerk) Leave(gids []int) {
 }
 
 func (ck *Clerk) Move(shard int, gid int) {
+	ck.mu.Lock()
 	args := &MoveArgs{
 		Shard:  shard,
 		GID:    gid,
@@ -108,6 +120,7 @@ func (ck *Clerk) Move(shard int, gid int) {
 		ReqNum: ck.reqNum,
 	}
 	ck.reqNum += 1
+	ck.mu.Unlock()
 
 	for {
 		// try each known server.
