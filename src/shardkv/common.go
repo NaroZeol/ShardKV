@@ -19,6 +19,8 @@ const (
 	ERR_CommitTimeout   = "Commit timeout"
 	ERR_FailedToCommit  = "Failed to commit"
 	ERR_HigherConfigNum = "Higer config number"
+
+	ERR_LowerConfigNum = "Lower config number"
 )
 
 const (

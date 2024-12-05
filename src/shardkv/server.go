@@ -13,7 +13,7 @@ import (
 	"6.5840/shardctrler"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -122,31 +122,17 @@ func (kv *ShardKV) RequestMap(args *RequestMapArgs, reply *RequestMapReply) {
 		return
 	}
 
-	kv.ckMu.Lock() // block client requests
 	kv.mu.Lock()
-	for kv.config.Num < args.ConfigNum {
-		nextConfig := kv.mck.Query(kv.config.Num + 1)
-
-		args := ChangeConfigArgs{
-			Id:     Local_ID,
-			ReqNum: kv.localReqNum,
-			OldNum: kv.config.Num,
-			NewNum: nextConfig.Num,
-			Config: nextConfig,
-		}
-		reply := ChangeConfigReply{}
-		kv.localReqNum += 1
-
+	if kv.config.Num < args.ConfigNum {
+		reply.Err = ERR_LowerConfigNum
 		kv.mu.Unlock()
-		kv.ChangeConfig(&args, &reply)
-		kv.mu.Lock()
+		return
 	}
 
 	for key, value := range kv.mp {
 		mpdup[key] = value
 	}
 	kv.mu.Unlock()
-	kv.ckMu.Unlock()
 
 	reply.Err = OK
 	reply.Mp = mpdup
@@ -374,6 +360,9 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 						if ok && (reply.Err != OK) {
 							DPrintf("[SKV-S][%v][%v] Server [%v][%v] reply with error: %v", kv.gid, kv.me, gid, si, reply.Err)
 							continue
+						}
+						if !ok {
+							DPrintf("[SKV-S][%v][%v] RequestMap to [%v][%v] timeout", kv.gid, kv.me, gid, si)
 						}
 					}
 				}
