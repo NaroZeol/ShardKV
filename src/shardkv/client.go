@@ -91,8 +91,11 @@ func (ck *Clerk) Get(key string) string {
 				}
 				// ... not ok, or ErrWrongLeader
 				if ok && (reply.Err != OK) {
-					DPrintf("[SKV-C][%v] Server [%v][%v] reply with error: %v", ck.id, gid, servers[si], reply.Err)
+					DPrintf("[SKV-C][%v] Server [%v][%v] reply with error: %v", ck.id, gid, si, reply.Err)
 					continue
+				}
+				if !ok {
+					DPrintf("[SKV-C][%v] Connect to Server [%v][%v] timeout", ck.id, gid, si)
 				}
 			}
 		}
@@ -135,8 +138,11 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				}
 				// ... not ok, or ErrWrongLeader
 				if ok && (reply.Err != OK) {
-					DPrintf("[SKV-C][%v] Server [%v][%v] reply with error: %v", ck.id, gid, servers[si], reply.Err)
+					DPrintf("[SKV-C][%v] Server [%v][%v] reply with error: %v", ck.id, gid, si, reply.Err)
 					continue
+				}
+				if !ok {
+					DPrintf("[SKV-C][%v] Connect to Server [%v][%v] timeout", ck.id, gid, si)
 				}
 			}
 		}
