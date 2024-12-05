@@ -9,10 +9,10 @@ import (
 )
 
 type Clerk struct {
-	servers     []*labrpc.ClientEnd
-	id          int64
-	leader      int
-	reqNum      int64
+	servers []*labrpc.ClientEnd
+	id      int64
+	leader  int
+	reqNum  int64
 }
 
 func nrand() int64 {

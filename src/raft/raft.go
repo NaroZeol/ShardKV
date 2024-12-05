@@ -395,9 +395,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	updateCommitIndex := func() {
+		if rf.commitIndex != args.LeaderCommit {
+			DPrintf("[%v] update commitIndex to #%v", rf.me, args.LeaderCommit)
+		}
 		rf.commitIndex = args.LeaderCommit
 		rf.enqueueCond.Signal()
-		DPrintf("[%v] update commitIndex to #%v", rf.me, rf.commitIndex)
 	}
 
 	// Log Synchronization

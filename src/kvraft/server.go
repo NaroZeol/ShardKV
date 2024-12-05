@@ -217,7 +217,7 @@ func (kv *KVServer) handleApplyMsg() {
 			}
 
 			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
-				DPrintf("[Server][%v] %v >= %v try to create snapshot up to #%v", kv.persister.RaftStateSize(), kv.maxraftstate, kv.me, applyMsg.CommandIndex)
+				DPrintf("[Server][%v] %v >= %v try to create snapshot up to #%v", kv.me, kv.persister.RaftStateSize(), kv.maxraftstate, applyMsg.CommandIndex)
 				for key := range kv.logRecord {
 					if kv.confirmMap[key] {
 						delete(kv.logRecord, key)
@@ -310,14 +310,14 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.snapShotIndex = 0
 	kv.lastApplied = 0
 
-	// debug
-	go func() {
-		for !kv.killed() {
-			term, isLeader := kv.rf.GetState()
-			DPrintf("[Server][%v] State report: {term: %v, isLeader: %v}", kv.me, term, isLeader)
-			time.Sleep(200 * time.Millisecond)
-		}
-	}()
+	// // debug
+	// go func() {
+	// 	for !kv.killed() {
+	// 		term, isLeader := kv.rf.GetState()
+	// 		DPrintf("[Server][%v] State report: {term: %v, isLeader: %v}", kv.me, term, isLeader)
+	// 		time.Sleep(200 * time.Millisecond)
+	// 	}
+	// }()
 
 	go kv.handleApplyMsg()
 

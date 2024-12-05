@@ -56,7 +56,6 @@ type GenericArgs interface {
 
 type GenericReply interface {
 	setErr(str Err)
-	getErr() Err
 	setServerName(name int)
 }
 
