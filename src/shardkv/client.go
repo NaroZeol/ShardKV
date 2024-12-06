@@ -83,7 +83,7 @@ func (ck *Clerk) Get(key string) string {
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ERR_NoKey) {
-					DPrintf("[SKV-C][%v] $%v Get(%v) from Group %v sucessfully, value: %v", ck.id, args.ReqNum, key, gid, reply.Value)
+					DPrintf("[SKV-C][%v] $%v Get(%v) from Group %v sucessfully, shard %v, value: %v", ck.id, args.ReqNum, key, gid, key2shard(key), reply.Value)
 					return reply.Value
 				}
 				if ok && (reply.Err == ERR_WrongGroup) {
@@ -130,7 +130,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV."+op, &args, &reply)
 				if ok && reply.Err == OK {
-					DPrintf("[SKV-C][%v] $%v %v(%v, %v) to group %v sucessfully", ck.id, args.ReqNum, op, key, gid, value)
+					DPrintf("[SKV-C][%v] $%v %v(%v, %v) to group %v sucessfully, shard %v", ck.id, args.ReqNum, op, key, value, gid, key2shard(key))
 					return
 				}
 				if ok && reply.Err == ERR_WrongGroup {

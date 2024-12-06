@@ -13,7 +13,7 @@ import (
 	"6.5840/shardctrler"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -161,6 +161,7 @@ func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType 
 	if session := kv.ckSessions[args.getId()]; session.LastOpVaild && session.LastOp.ReqNum == args.getReqNum() {
 		if op, ok := kv.logRecord[session.LastOpIndex]; ok && op.Number == session.LastOp.Number {
 			kv.successCommit(args, reply, opType)
+			DPrintf("[SKV-S][%v][%v] reply success because [%v]$%v has completed", kv.gid, kv.me, args.getId(), args.getReqNum())
 			kv.mu.Unlock()
 			return
 		} // else start a new operation
@@ -259,7 +260,7 @@ func (kv *ShardKV) applyOp(op Op) bool {
 	case OT_GET:
 		getArgs := op.Args.(GetArgs)
 		if kv.config.Shards[key2shard(getArgs.Key)] == kv.gid {
-			DPrintf("[SKV-S][%v][%v] Apply Op: Get(%v)", kv.gid, kv.me, getArgs.Key)
+			DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: Get(%v)", kv.gid, kv.me, getArgs.Id, getArgs.ReqNum, getArgs.Key)
 			return true
 		} else {
 			DPrintf("[SKV-S][%v][%v] Failed to apply Op: Get(%v)", kv.gid, kv.me, getArgs.Key)
@@ -269,7 +270,7 @@ func (kv *ShardKV) applyOp(op Op) bool {
 		putArgs := op.Args.(PutAppendArgs)
 		if kv.config.Shards[key2shard(putArgs.Key)] == kv.gid {
 			kv.mp[putArgs.Key] = putArgs.Value
-			DPrintf("[SKV-S][%v][%v] Apply Op: Put(%v, %v)", kv.gid, kv.me, putArgs.Key, putArgs.Value)
+			DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: Put(%v, %v)", kv.gid, kv.me, putArgs.Id, putArgs.ReqNum, putArgs.Key, putArgs.Value)
 			return true
 		} else {
 			DPrintf("[SKV-S][%v][%v] Failed to apply Op: Put(%v, %v)", kv.gid, kv.me, putArgs.Key, putArgs.Value)
@@ -279,7 +280,9 @@ func (kv *ShardKV) applyOp(op Op) bool {
 		appendArgs := op.Args.(PutAppendArgs)
 		if kv.config.Shards[key2shard(appendArgs.Key)] == kv.gid {
 			kv.mp[appendArgs.Key] = kv.mp[appendArgs.Key] + appendArgs.Value
-			DPrintf("[SKV-S][%v][%v] Apply Op: Append(%v, %v)", kv.gid, kv.me, appendArgs.Key, appendArgs.Value)
+			DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: Append(%v, %v)", kv.gid, kv.me, appendArgs.Id, appendArgs.ReqNum, appendArgs.Key, appendArgs.Value)
+			// TODO: remove this temp printf
+			DPrintf("Current {%v}: %v", appendArgs.Key, kv.mp[appendArgs.Key])
 			return true
 		} else {
 			DPrintf("[SKV-S][%v][%v] Failed to apply Op: Append(%v, %v)", kv.gid, kv.me, appendArgs.Key, appendArgs.Value)
