@@ -29,10 +29,11 @@ type Session struct {
 }
 
 type Op struct {
-	Type   string
-	Number int64
-	ReqNum int64
-	CkId   int64
+	Type     string
+	Number   int64
+	ReqNum   int64
+	CkId     int64
+	ShardNum int
 
 	Args interface{}
 }
@@ -113,9 +114,11 @@ func (kv *ShardKV) ChangeConfig(args *ChangeConfigArgs, reply *ChangeConfigReply
 	kv.handleNormalRPC(args, reply, OT_ChangeConfig)
 }
 
+// TODO: Rename this function since it returns sessions too
 func (kv *ShardKV) RequestMap(args *RequestMapArgs, reply *RequestMapReply) {
 	DPrintf("[SKV-S][%v][%v] receive RPC RequestMap from [%v][%v]", kv.gid, kv.me, args.Gid, args.Me)
 	mpdup := make(map[string]string)
+	sessionDup := make(map[int64]Session, 0)
 
 	if _, isLeader := kv.rf.GetState(); !isLeader {
 		reply.Err = ERR_WrongLeader
@@ -132,16 +135,22 @@ func (kv *ShardKV) RequestMap(args *RequestMapArgs, reply *RequestMapReply) {
 	for key, value := range kv.mp {
 		mpdup[key] = value
 	}
+	for key, value := range kv.ckSessions {
+		sessionDup[key] = value
+	}
 	kv.mu.Unlock()
 
 	reply.Err = OK
 	reply.Mp = mpdup
+	reply.Sessions = sessionDup
 }
 
 func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType string) {
 	DPrintf("[SKV-S][%v][%v] receive RPC %v: %+v", kv.gid, kv.me, opType, args)
 
 	kv.mu.Lock()
+
+	// TODO: Are these two checks'order important?
 	if args.getId() != Local_ID && kv.config.Shards[key2shard(args.getKey())] != kv.gid {
 		reply.setErr(ERR_WrongGroup)
 		DPrintf("[SKV-S][%v][%v] Group [%v] reply with error: %v", kv.gid, kv.me, kv.gid, ERR_WrongGroup)
@@ -158,10 +167,11 @@ func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType 
 	}
 
 	op := Op{
-		Type:   opType,
-		Number: nrand(),
-		ReqNum: args.getReqNum(),
-		CkId:   args.getId(),
+		Type:     opType,
+		Number:   nrand(),
+		ReqNum:   args.getReqNum(),
+		CkId:     args.getId(),
+		ShardNum: key2shard(args.getKey()),
 	}
 
 	switch opType {
@@ -277,11 +287,14 @@ func (kv *ShardKV) applyOp(op Op) bool {
 		}
 	case OT_ChangeConfig:
 		changeConfigArgs := op.Args.(ChangeConfigArgs)
-		oldConfig := kv.config
 
-		kv.config = changeConfigArgs.Config
-		DPrintf("[SKV-S][%v][%v] Apply Op: ChangeConfig(%v, %v)", kv.gid, kv.me, changeConfigArgs.OldNum, changeConfigArgs.NewNum)
-		kv.MoveShards(oldConfig, kv.config)
+		DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: ChangeConfig(%v)", kv.gid, kv.me, changeConfigArgs.Id, changeConfigArgs.ReqNum, changeConfigArgs.NewNum)
+		if kv.config.Num < changeConfigArgs.Config.Num {
+			kv.MoveShards(kv.config, changeConfigArgs.Config)
+			kv.config = changeConfigArgs.Config
+		} else {
+			DPrintf("[SKV-S][%v][%v] ChangeConfig(%v): kv.config is already %v", kv.gid, kv.me, changeConfigArgs.NewNum, kv.config.Num)
+		}
 		return true
 	default:
 		log.Fatal("wrong switch in applyOp")
@@ -352,6 +365,13 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 									DPrintf("[SKV-S][%v][%v] Set key: %v, value: %v", kv.gid, kv.me, key, value)
 								}
 							}
+							for key, value := range reply.Sessions {
+								if key != -1 && value.LastOp.ShardNum == shard {
+									value.LastOpIndex = -1 // temporary solution for fix, TODO, a better way
+									kv.ckSessions[key] = value
+									DPrintf("[SKV-S][%v][%v] update ckSessions[%v] = %v", kv.gid, kv.me, key, value)
+								}
+							}
 							kv.mu.Unlock()
 							DPrintf("[SKV-S][%v][%v] RequestMap from Server[%v][%v] sucessfully", kv.gid, kv.me, gid, si)
 							return
@@ -405,6 +425,7 @@ func (kv *ShardKV) handleApplyMsg() {
 				// let waittingForCommit() failed.
 				// emm...is this OK?
 				op.Number = -1
+				kv.logRecord[applyMsg.CommandIndex] = op
 			}
 
 			s := kv.ckSessions[op.CkId]

@@ -84,8 +84,9 @@ type RequestMapArgs struct {
 }
 
 type RequestMapReply struct {
-	Err Err
-	Mp  map[string]string
+	Err      Err
+	Mp       map[string]string
+	Sessions map[int64]Session
 }
 
 type GenericArgs interface {
