@@ -159,7 +159,6 @@ func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType 
 
 	if args.getId() != Local_ID && kv.config.Shards[key2shard(args.getKey())] != kv.gid {
 		reply.setErr(ERR_WrongGroup)
-		DPrintf("[SKV-S][%v][%v] Group [%v] reply with error: %v", kv.gid, kv.me, kv.gid, ERR_WrongGroup)
 		kv.mu.Unlock()
 		return
 	}
@@ -305,6 +304,7 @@ func (kv *ShardKV) applyOp(op Op) bool {
 		if kv.config.Num < changeConfigArgs.Config.Num {
 			kv.MoveShards(kv.config, changeConfigArgs.Config)
 			kv.config = changeConfigArgs.Config
+			DPrintf("[SKV-S][%v][%v] Change config to %v successfuly", kv.gid, kv.me, changeConfigArgs.Config.Num)
 		} else {
 			DPrintf("[SKV-S][%v][%v] ChangeConfig(%v): kv.config is already %v", kv.gid, kv.me, changeConfigArgs.NewNum, kv.config.Num)
 		}
@@ -488,6 +488,7 @@ func (kv *ShardKV) handleApplyMsg() {
 			kv.lastApplied = applyMsg.SnapshotIndex
 
 			DPrintf("[SKV-S][%v][%v] apply snapshot up to #%v successfully, maker [%v]", kv.gid, kv.me, applyMsg.SnapshotIndex, snapshot.Maker)
+			DPrintf("[SKV-S][%v][%v] Config: %+v", kv.gid, kv.me, kv.config)
 			kv.mu.Unlock()
 		}
 	}

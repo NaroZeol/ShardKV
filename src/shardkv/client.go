@@ -72,7 +72,7 @@ func (ck *Clerk) Get(key string) string {
 	}
 	ck.reqNum += 1
 
-	DPrintf("[SKV-C][%v] Get(%v)", ck.id, key)
+	DPrintf("[SKV-C][%v] Get(%v), shard %v", ck.id, key, key2shard(key))
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
@@ -87,6 +87,7 @@ func (ck *Clerk) Get(key string) string {
 					return reply.Value
 				}
 				if ok && (reply.Err == ERR_WrongGroup) {
+					DPrintf("[SKV-C][%v] Server [%v][%v] reply with error: %v", ck.id, gid, si, reply.Err)
 					break
 				}
 				// ... not ok, or ErrWrongLeader
@@ -119,7 +120,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		ReqNum: ck.reqNum,
 	}
 	ck.reqNum += 1
-	DPrintf("[SKV-C][%v] $%v %v(%v, %v)", ck.id, args.ReqNum, op, key, value)
+	DPrintf("[SKV-C][%v] $%v %v(%v, %v), shard %v", ck.id, args.ReqNum, op, key, value, key2shard(key))
 
 	for {
 		shard := key2shard(key)
