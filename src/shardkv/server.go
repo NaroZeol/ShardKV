@@ -151,7 +151,12 @@ func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType 
 
 	kv.mu.Lock()
 
-	// TODO: Are these two checks'order important?
+	if _, isLeader := kv.rf.GetState(); !isLeader {
+		reply.setErr(ERR_WrongLeader)
+		kv.mu.Unlock()
+		return
+	}
+
 	if args.getId() != Local_ID && kv.config.Shards[key2shard(args.getKey())] != kv.gid {
 		reply.setErr(ERR_WrongGroup)
 		DPrintf("[SKV-S][%v][%v] Group [%v] reply with error: %v", kv.gid, kv.me, kv.gid, ERR_WrongGroup)
