@@ -443,13 +443,13 @@ func (kv *ShardKV) handleApplyMsg() {
 				// emm...is this OK?
 				op.Number = -1
 				kv.logRecord[applyMsg.CommandIndex] = op
+			} else { // update session only after applying successfully
+				s := kv.ckSessions[uniKey]
+				s.LastOp = op
+				s.LastOpIndex = applyMsg.CommandIndex
+				s.LastOpVaild = true
+				kv.ckSessions[uniKey] = s
 			}
-
-			s := kv.ckSessions[uniKey]
-			s.LastOp = op
-			s.LastOpIndex = applyMsg.CommandIndex
-			s.LastOpVaild = true
-			kv.ckSessions[uniKey] = s
 
 			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
 				DPrintf("[SKV-S][%v][%v] %v >= %v try to create snapshot up to #%v", kv.gid, kv.me, kv.persister.RaftStateSize(), kv.maxraftstate, applyMsg.CommandIndex)
