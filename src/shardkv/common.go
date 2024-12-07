@@ -86,7 +86,7 @@ type RequestMapArgs struct {
 type RequestMapReply struct {
 	Err      Err
 	Mp       map[string]string
-	Sessions map[int64]Session
+	Sessions map[string]Session
 }
 
 type GenericArgs interface {

@@ -3,6 +3,7 @@ package shardkv
 import (
 	"bytes"
 	"log"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,7 +57,7 @@ type ShardKV struct {
 	persister    *raft.Persister
 
 	mp          map[string]string
-	ckSessions  map[int64]Session
+	ckSessions  map[string]Session // {string(ckId+shardNum)} -> session
 	logRecord   map[int]Op
 	confirmMap  map[int]bool
 	lastApplied int
@@ -68,7 +69,7 @@ type ShardKV struct {
 
 type Snapshot struct {
 	Mp         map[string]string
-	CkSessions map[int64]Session
+	CkSessions map[string]Session
 	Config     shardctrler.Config
 	Maker      int // for debug
 }
@@ -118,7 +119,7 @@ func (kv *ShardKV) ChangeConfig(args *ChangeConfigArgs, reply *ChangeConfigReply
 func (kv *ShardKV) RequestMap(args *RequestMapArgs, reply *RequestMapReply) {
 	DPrintf("[SKV-S][%v][%v] receive RPC RequestMap from [%v][%v]", kv.gid, kv.me, args.Gid, args.Me)
 	mpdup := make(map[string]string)
-	sessionDup := make(map[int64]Session, 0)
+	sessionDup := make(map[string]Session, 0)
 
 	if _, isLeader := kv.rf.GetState(); !isLeader {
 		reply.Err = ERR_WrongLeader
@@ -158,7 +159,11 @@ func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType 
 		return
 	}
 
-	if session := kv.ckSessions[args.getId()]; session.LastOpVaild && session.LastOp.ReqNum == args.getReqNum() {
+	// uniKey = string(ckId) + string(shardNum)
+	// use to identify each client's operation on different shards
+	uniKey := strconv.FormatInt(args.getId(), 10) + strconv.FormatInt(int64(key2shard(args.getKey())), 10)
+
+	if session := kv.ckSessions[uniKey]; session.LastOpVaild && session.LastOp.ReqNum == args.getReqNum() {
 		if op, ok := kv.logRecord[session.LastOpIndex]; ok && op.Number == session.LastOp.Number {
 			kv.successCommit(args, reply, opType)
 			DPrintf("[SKV-S][%v][%v] reply success because [%v]$%v has completed", kv.gid, kv.me, args.getId(), args.getReqNum())
@@ -369,7 +374,7 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 								}
 							}
 							for key, value := range reply.Sessions {
-								if key != -1 && value.LastOp.ShardNum == shard {
+								if key != "-1" && value.LastOp.ShardNum == shard {
 									value.LastOpIndex = -1 // temporary solution for fix, TODO, a better way
 									kv.ckSessions[key] = value
 									DPrintf("[SKV-S][%v][%v] update ckSessions[%v] = %v", kv.gid, kv.me, key, value)
@@ -411,15 +416,19 @@ func (kv *ShardKV) handleApplyMsg() {
 			kv.logRecord[applyMsg.CommandIndex] = op
 			kv.lastApplied = applyMsg.CommandIndex
 
+			// uniKey = string(ckId) + string(shardNum)
+			// use to identify each client's operation on different shards
+			uniKey := strconv.FormatInt(op.CkId, 10) + strconv.FormatInt(int64(op.ShardNum), 10)
+
 			// stable operation, don't change state machine
-			if session := kv.ckSessions[op.CkId]; session.LastOpVaild && session.LastOpIndex < applyMsg.CommandIndex &&
+			if session := kv.ckSessions[uniKey]; session.LastOpVaild && session.LastOpIndex < applyMsg.CommandIndex &&
 				op.ReqNum <= session.LastOp.ReqNum {
 				DPrintf("[SKV-S][%v][%v] stable operation #%v for [%v] ($%v <= $%v), do not change state machine", kv.gid, kv.me, applyMsg.CommandIndex, op.CkId, op.ReqNum, session.LastOp.ReqNum)
 
 				session.LastOp = op
 				session.LastOpIndex = applyMsg.CommandIndex
 				session.LastOpVaild = true
-				kv.ckSessions[op.CkId] = session
+				kv.ckSessions[uniKey] = session
 				kv.mu.Unlock()
 				continue
 			}
@@ -431,11 +440,11 @@ func (kv *ShardKV) handleApplyMsg() {
 				kv.logRecord[applyMsg.CommandIndex] = op
 			}
 
-			s := kv.ckSessions[op.CkId]
+			s := kv.ckSessions[uniKey]
 			s.LastOp = op
 			s.LastOpIndex = applyMsg.CommandIndex
 			s.LastOpVaild = true
-			kv.ckSessions[op.CkId] = s
+			kv.ckSessions[uniKey] = s
 
 			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
 				DPrintf("[SKV-S][%v][%v] %v >= %v try to create snapshot up to #%v", kv.gid, kv.me, kv.persister.RaftStateSize(), kv.maxraftstate, applyMsg.CommandIndex)
@@ -576,7 +585,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	kv.mp = make(map[string]string)
 	kv.confirmMap = make(map[int]bool)
-	kv.ckSessions = make(map[int64]Session)
+	kv.ckSessions = make(map[string]Session)
 	kv.logRecord = make(map[int]Op)
 
 	kv.snapShotIndex = 0
