@@ -115,11 +115,10 @@ func (kv *ShardKV) ChangeConfig(args *ChangeConfigArgs, reply *ChangeConfigReply
 	kv.handleNormalRPC(args, reply, OT_ChangeConfig)
 }
 
-// TODO: Rename this function since it returns sessions too
-func (kv *ShardKV) RequestMap(args *RequestMapArgs, reply *RequestMapReply) {
+func (kv *ShardKV) RequestMapAndSession(args *RequestMapAndSessionArgs, reply *RequestMapAndSessionReply) {
 	DPrintf("[SKV-S][%v][%v] receive RPC RequestMap from [%v][%v]", kv.gid, kv.me, args.Gid, args.Me)
-	mpdup := make(map[string]string)
-	sessionDup := make(map[string]Session, 0)
+	replyMp := make(map[string]string)
+	replySession := make(map[string]Session, 0)
 
 	if _, isLeader := kv.rf.GetState(); !isLeader {
 		reply.Err = ERR_WrongLeader
@@ -134,16 +133,20 @@ func (kv *ShardKV) RequestMap(args *RequestMapArgs, reply *RequestMapReply) {
 	}
 
 	for key, value := range kv.mp {
-		mpdup[key] = value
+		if args.Shards[key2shard(key)] {
+			replyMp[key] = value
+		}
 	}
 	for key, value := range kv.ckSessions {
-		sessionDup[key] = value
+		if key != strconv.FormatInt(Local_ID, 10) && args.Shards[value.LastOp.ShardNum] {
+			replySession[key] = value
+		}
 	}
 	kv.mu.Unlock()
 
 	reply.Err = OK
-	reply.Mp = mpdup
-	reply.Sessions = sessionDup
+	reply.Mp = replyMp
+	reply.Sessions = replySession
 }
 
 func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType string) {
@@ -318,28 +321,23 @@ func (kv *ShardKV) applyOp(op Op) bool {
 }
 
 func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrler.Config) {
-	// handleApplyMsg() -> applyOp() -> MoveShards()
 	// should hold kv.mu
-	// TODO: fix dead lock
 
 	// do nothing if it's this first config
 	if oldConfig.Num == 0 {
 		return
 	}
 
-	type pair struct { // I miss C++'s Pair
-		gid   int
-		shard int
-	}
-
-	receiveFrom := make([]pair, 0) // which shard should receive from. (gid -> shard)
+	// which shard should receive from. (gid -> {set of needed shards})
+	receiveFrom := make(map[int]map[int]bool, 0)
 
 	for i := 0; i < shardctrler.NShards; i++ {
 		if oldConfig.Shards[i] != kv.gid && newConfig.Shards[i] == kv.gid {
-			receiveFrom = append(receiveFrom, pair{
-				gid:   oldConfig.Shards[i],
-				shard: i,
-			})
+			// receiveFrom: gid -> set of needed shards
+			if receiveFrom[oldConfig.Shards[i]] == nil {
+				receiveFrom[oldConfig.Shards[i]] = make(map[int]bool)
+			}
+			receiveFrom[oldConfig.Shards[i]][i] = true
 		}
 	}
 	DPrintf("[SKV-S][%v][%v] oldConfig: %+v", kv.gid, kv.me, oldConfig)
@@ -350,40 +348,34 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 	// terrible code style
 	// TODO: rebuild
 	wg := sync.WaitGroup{}
-	for _, pa := range receiveFrom {
-		gid := pa.gid // I miss tuple...
-		shard := pa.shard
-
+	for gid, shards := range receiveFrom {
 		wg.Add(1)
-		go func(gid int, shard int) {
+		go func(gid int, shards map[int]bool) {
 			defer wg.Done()
 
 			for {
 				if servers, ok := oldConfig.Groups[gid]; ok {
 					for si := 0; si < len(servers); si++ {
 						srv := kv.make_end(servers[si])
-						args := RequestMapArgs{
+						args := RequestMapAndSessionArgs{
 							Gid:       kv.gid,
 							Me:        kv.me,
+							Shards:    shards,
 							ConfigNum: newConfig.Num,
 						}
-						reply := RequestMapReply{}
-						ok := srv.Call("ShardKV.RequestMap", &args, &reply)
+						reply := RequestMapAndSessionReply{}
+						ok := srv.Call("ShardKV.RequestMapAndSession", &args, &reply)
 
 						if ok && reply.Err == OK {
 							kv.mu.Lock()
 							for key, value := range reply.Mp {
-								if key2shard(key) == shard {
-									kv.mp[key] = value
-									DPrintf("[SKV-S][%v][%v] Set key: %v, value: %v", kv.gid, kv.me, key, value)
-								}
+								kv.mp[key] = value
+								DPrintf("[SKV-S][%v][%v] Set key: %v, value: %v", kv.gid, kv.me, key, value)
 							}
 							for key, value := range reply.Sessions {
-								if key != "-1" && value.LastOp.ShardNum == shard {
-									value.LastOpIndex = -1 // temporary solution for fix, TODO, a better way
-									kv.ckSessions[key] = value
-									DPrintf("[SKV-S][%v][%v] update ckSessions[%v] = %v", kv.gid, kv.me, key, value)
-								}
+								value.LastOpIndex = -1 // temporary solution for fix, TODO, a better way
+								kv.ckSessions[key] = value
+								DPrintf("[SKV-S][%v][%v] update ckSessions[%v] = %v", kv.gid, kv.me, key, value)
 							}
 							kv.mu.Unlock()
 							DPrintf("[SKV-S][%v][%v] RequestMap from Server[%v][%v] sucessfully", kv.gid, kv.me, gid, si)
@@ -401,7 +393,7 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 				}
 				time.Sleep(100 * time.Millisecond)
 			}
-		}(gid, shard)
+		}(gid, shards)
 	}
 	kv.mu.Unlock()
 	wg.Wait()

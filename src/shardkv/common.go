@@ -77,13 +77,14 @@ type ChangeConfigReply struct {
 	Err Err
 }
 
-type RequestMapArgs struct {
+type RequestMapAndSessionArgs struct {
 	Gid       int
 	Me        int
+	Shards    map[int]bool
 	ConfigNum int
 }
 
-type RequestMapReply struct {
+type RequestMapAndSessionReply struct {
 	Err      Err
 	Mp       map[string]string
 	Sessions map[string]Session
