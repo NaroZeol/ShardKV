@@ -24,15 +24,11 @@ const (
 )
 
 const (
-	OT_GET          = "Get"
-	OT_PUT          = "Put"
-	OT_APPEND       = "Append"
-	OT_ChangeConfig = "ChangeConfig"
-)
-
-// special ck ID
-const (
-	Local_ID = -1
+	OT_GET           = "Get"
+	OT_PUT           = "Put"
+	OT_APPEND        = "Append"
+	OT_ApplyMovement = "ApplyMovement"
+	OT_ChangeConfig  = "ChangeConfig"
 )
 
 type Err string
@@ -61,6 +57,18 @@ type GetArgs struct {
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+type ApplyMovementArgs struct {
+	Id     int64
+	ReqNum int64
+
+	Mp       map[string]string
+	Sessions map[string]Session
+}
+
+type ApplyMovementReply struct {
+	Err Err
 }
 
 type ChangeConfigArgs struct {
@@ -124,9 +132,21 @@ func (args PutAppendArgs) getKey() string {
 	return args.Key
 }
 
-// indentif this RPC is a local "RPC"
+func (args ApplyMovementArgs) getId() int64 {
+	return args.Id
+}
+
+func (args ApplyMovementArgs) getReqNum() int64 {
+	return args.ReqNum
+}
+
+// only define for satisfying interface
+func (args ApplyMovementArgs) getKey() string {
+	return ""
+}
+
 func (args ChangeConfigArgs) getId() int64 {
-	return Local_ID
+	return args.Id
 }
 
 func (args ChangeConfigArgs) getReqNum() int64 {
@@ -143,6 +163,10 @@ func (reply *GetReply) setErr(err Err) {
 }
 
 func (reply *PutAppendReply) setErr(err Err) {
+	reply.Err = err
+}
+
+func (reply *ApplyMovementReply) setErr(err Err) {
 	reply.Err = err
 }
 

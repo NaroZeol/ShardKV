@@ -62,6 +62,7 @@ type ShardKV struct {
 	confirmMap  map[int]bool
 	lastApplied int
 
+	uid         int64
 	localReqNum int64
 
 	snapShotIndex int
@@ -95,26 +96,6 @@ func (kv *ShardKV) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.handleNormalRPC(args, reply, OT_APPEND)
 }
 
-func (kv *ShardKV) ChangeConfig(args *ChangeConfigArgs, reply *ChangeConfigReply) {
-	// should **NOT** hold kv.mu when this function is called by local machine
-
-	kv.mu.Lock()
-	if args.Config.Num < kv.config.Num {
-		reply.Err = ERR_HigherConfigNum
-		reply.Num = kv.config.Num
-		kv.mu.Unlock()
-		return
-	} else if args.Config.Num == kv.config.Num {
-		reply.Err = OK
-		reply.Num = kv.config.Num
-		kv.mu.Unlock()
-		return
-	}
-	kv.mu.Unlock()
-
-	kv.handleNormalRPC(args, reply, OT_ChangeConfig)
-}
-
 func (kv *ShardKV) RequestMapAndSession(args *RequestMapAndSessionArgs, reply *RequestMapAndSessionReply) {
 	DPrintf("[SKV-S][%v][%v] receive RPC RequestMap from [%v][%v]", kv.gid, kv.me, args.Gid, args.Me)
 	replyMp := make(map[string]string)
@@ -138,7 +119,8 @@ func (kv *ShardKV) RequestMapAndSession(args *RequestMapAndSessionArgs, reply *R
 		}
 	}
 	for key, value := range kv.ckSessions {
-		if key != strconv.FormatInt(Local_ID, 10) && args.Shards[value.LastOp.ShardNum] {
+		// Client's Id is a positive number
+		if key[0] != '-' && args.Shards[value.LastOp.ShardNum] {
 			replySession[key] = value
 		}
 	}
@@ -160,7 +142,7 @@ func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType 
 		return
 	}
 
-	if args.getId() != Local_ID && kv.config.Shards[key2shard(args.getKey())] != kv.gid {
+	if 0 <= args.getId() && kv.config.Shards[key2shard(args.getKey())] != kv.gid {
 		reply.setErr(ERR_WrongGroup)
 		kv.mu.Unlock()
 		return
@@ -196,6 +178,8 @@ func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType 
 		op.Args = *args.(*PutAppendArgs)
 	case OT_ChangeConfig:
 		op.Args = *args.(*ChangeConfigArgs)
+	case OT_ApplyMovement:
+		op.Args = *args.(*ApplyMovementArgs)
 	}
 
 	index, _, isLeader := kv.rf.Start(op)
@@ -259,6 +243,9 @@ func (kv *ShardKV) successCommit(args GenericArgs, reply GenericReply, opType st
 		changeConfigReply := reply.(*ChangeConfigReply)
 		changeConfigReply.Err = OK
 		changeConfigReply.Num = kv.config.Num
+	case OT_ApplyMovement:
+		applyMovementReply := reply.(*ApplyMovementReply)
+		applyMovementReply.Err = OK
 	default:
 		log.Fatal("Wrong switch in successCommit()")
 	}
@@ -305,11 +292,24 @@ func (kv *ShardKV) applyOp(op Op) bool {
 
 		DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: ChangeConfig(%v)", kv.gid, kv.me, changeConfigArgs.Id, changeConfigArgs.ReqNum, changeConfigArgs.NewNum)
 		if kv.config.Num < changeConfigArgs.Config.Num {
-			kv.MoveShards(kv.config, changeConfigArgs.Config)
 			kv.config = changeConfigArgs.Config
 			DPrintf("[SKV-S][%v][%v] Change config to %v successfuly", kv.gid, kv.me, changeConfigArgs.Config.Num)
 		} else {
 			DPrintf("[SKV-S][%v][%v] ChangeConfig(%v): kv.config is already %v", kv.gid, kv.me, changeConfigArgs.NewNum, kv.config.Num)
+		}
+		return true
+	case OT_ApplyMovement:
+		applyMovementArgs := op.Args.(ApplyMovementArgs)
+
+		DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: applyMovement()", kv.gid, kv.me, applyMovementArgs.Id, applyMovementArgs.ReqNum)
+		for key, value := range applyMovementArgs.Mp {
+			kv.mp[key] = value
+			DPrintf("[SKV-S][%v][%v] Set Key: %v, Value: %v, Shard: %v", kv.gid, kv.me, key, value, key2shard(key))
+		}
+		for key, value := range applyMovementArgs.Sessions {
+			value.LastOpIndex = -1 // temporary solution for fix, TODO, a better way
+			kv.ckSessions[key] = value
+			DPrintf("[SKV-S][%v][%v] update ckSessions[%v] = %v", kv.gid, kv.me, key, value)
 		}
 		return true
 	default:
@@ -325,6 +325,10 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 
 	// do nothing if it's this first config
 	if oldConfig.Num == 0 {
+		return
+	}
+
+	if oldConfig.Num == newConfig.Num {
 		return
 	}
 
@@ -367,18 +371,31 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 						ok := srv.Call("ShardKV.RequestMapAndSession", &args, &reply)
 
 						if ok && reply.Err == OK {
-							kv.mu.Lock()
-							for key, value := range reply.Mp {
-								kv.mp[key] = value
-								DPrintf("[SKV-S][%v][%v] Set key: %v, value: %v", kv.gid, kv.me, key, value)
-							}
-							for key, value := range reply.Sessions {
-								value.LastOpIndex = -1 // temporary solution for fix, TODO, a better way
-								kv.ckSessions[key] = value
-								DPrintf("[SKV-S][%v][%v] update ckSessions[%v] = %v", kv.gid, kv.me, key, value)
-							}
-							kv.mu.Unlock()
 							DPrintf("[SKV-S][%v][%v] RequestMap from Server[%v][%v] sucessfully", kv.gid, kv.me, gid, si)
+							kv.mu.Lock()
+							moveArgs := ApplyMovementArgs{
+								Mp:       reply.Mp,
+								Sessions: reply.Sessions,
+								Id:       kv.uid,
+								ReqNum:   kv.localReqNum,
+							}
+							kv.localReqNum += 1
+							kv.mu.Unlock()
+
+							DPrintf("[SKV-S][%v][%v] Start Local RPC ApplyMovement $%v", kv.gid, kv.me, moveArgs.ReqNum)
+							for !kv.killed() {
+								moveReply := ApplyMovementReply{}
+								kv.handleNormalRPC(&moveArgs, &moveReply, OT_ApplyMovement)
+								if moveReply.Err == OK {
+									break
+								} else if moveReply.Err == ERR_WrongLeader {
+									DPrintf("[SKV-S][%v][%v] Local RPC ApplyMovement $%v reply with error: %v", kv.gid, kv.me, moveArgs.ReqNum, moveReply.Err)
+									break
+								} else {
+									DPrintf("[SKV-S][%v][%v] Local RPC ApplyMovement $%v reply with error: %v", kv.gid, kv.me, moveArgs.ReqNum, moveReply.Err)
+									continue
+								}
+							}
 							return
 						}
 						// ... not ok, or ErrWrongLeader
@@ -499,18 +516,30 @@ func (kv *ShardKV) pollConfig() {
 		for kv.config.Num < latestConfig.Num {
 			nextConfig := kv.mck.Query(kv.config.Num + 1)
 
+			kv.MoveShards(kv.config, nextConfig)
 			args := ChangeConfigArgs{
-				Id:     Local_ID, // specail ck Id for local "RPC"
+				Id:     kv.uid,
 				ReqNum: kv.localReqNum,
 				Config: nextConfig,
 				OldNum: kv.config.Num, // for debug
 				NewNum: nextConfig.Num,
 			}
-			reply := ChangeConfigReply{}
 			kv.localReqNum += 1
 
 			kv.mu.Unlock()
-			kv.ChangeConfig(&args, &reply)
+			for !kv.killed() {
+				reply := ChangeConfigReply{}
+				kv.handleNormalRPC(&args, &reply, OT_ChangeConfig)
+				if reply.Err == OK {
+					break
+				} else if reply.Err == ERR_WrongLeader {
+					DPrintf("[SKV-S][%v][%v] Local RPC ChangeConfig reply with error: %v", kv.gid, kv.me, reply.Err)
+					break
+				} else {
+					DPrintf("[SKV-S][%v][%v] Local RPC ChangeConfig reply with error: %v", kv.gid, kv.me, reply.Err)
+					continue
+				}
+			}
 			kv.mu.Lock()
 		}
 		kv.mu.Unlock()
@@ -568,6 +597,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	labgob.Register(GetArgs{})
 	labgob.Register(PutAppendArgs{})
 	labgob.Register(ChangeConfigArgs{})
+	labgob.Register(ApplyMovementArgs{})
 
 	kv := new(ShardKV)
 	kv.me = me
@@ -589,6 +619,8 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.snapShotIndex = 0
 	kv.lastApplied = 0
 	kv.localReqNum = 1
+	kv.uid = -nrand() // use negtive value
+	DPrintf("[SKV-S][%v][%v] Start With UID %v", kv.gid, kv.me, kv.uid)
 
 	kv.mck = shardctrler.MakeClerk(kv.ctrlers)
 
