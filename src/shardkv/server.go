@@ -328,15 +328,22 @@ func (kv *ShardKV) applyOp(op Op) bool {
 		deleteShardsArgs := op.Args.(DeleteShardsArgs)
 		DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: DeleteShards()", kv.gid, kv.me, deleteShardsArgs.Id, deleteShardsArgs.ReqNum)
 
-		// emm... may be some checks?
+		// ensure this shard is indeed unneeded
+		deletedShards := deleteShardsArgs.Shards
+		for shards := range deletedShards {
+			if kv.config.Shards[shards] == kv.gid {
+				delete(deletedShards, shards)
+			}
+		}
+
 		for key, value := range kv.mp {
-			if deleteShardsArgs.Shards[key2shard(key)] {
-				DPrintf("[SKV-S][%v][%v] delete Key: %v, Value: %v", kv.gid, kv.me, key, value)
+			if deletedShards[key2shard(key)] {
+				DPrintf("[SKV-S][%v][%v] delete Shard: %v, Key: %v, Value: %v", kv.gid, kv.me, key2shard(key), key, value)
 				delete(kv.mp, key)
 			}
 		}
 		for uniKey, session := range kv.ckSessions {
-			if deleteShardsArgs.Shards[session.LastOpShardNum] {
+			if uniKey[0] != '-' && deletedShards[session.LastOpShardNum] {
 				DPrintf("[SKV-S][%v][%v] delete uniKey: %v, session: %+v", kv.gid, kv.me, uniKey, session)
 				delete(kv.ckSessions, uniKey)
 			}
@@ -444,10 +451,12 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 	kv.mu.Unlock()
 
 	DPrintf("[SKV-S][%v][%v] Start Local RPC ApplyMovement $%v", kv.gid, kv.me, moveArgs.ReqNum)
+	applyMovementOK := false
 	for !kv.killed() {
 		moveReply := ApplyMovementReply{}
 		kv.handleNormalRPC(&moveArgs, &moveReply, OT_ApplyMovement)
 		if moveReply.Err == OK {
+			applyMovementOK = true
 			break
 		} else if moveReply.Err == ERR_WrongLeader {
 			DPrintf("[SKV-S][%v][%v] Local RPC ApplyMovement $%v reply with error: %v", kv.gid, kv.me, moveArgs.ReqNum, moveReply.Err)
@@ -458,6 +467,13 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 		}
 	}
 
+	if kv.killed() || !applyMovementOK {
+		kv.mu.Lock()
+		return // return to avoid deletion
+	}
+
+	// Send DeleteShards only after ApplyMovement succeed
+	// **suggest** to delete, not force delete
 	for gid, shards := range receiveFrom {
 		wg.Add(1)
 		go func(gid int, shards map[int]bool) {
