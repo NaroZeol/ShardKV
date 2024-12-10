@@ -29,6 +29,7 @@ const (
 	OT_APPEND        = "Append"
 	OT_ApplyMovement = "ApplyMovement"
 	OT_ChangeConfig  = "ChangeConfig"
+	OT_DeleteShards  = "DeleteShards"
 )
 
 type Err string
@@ -98,6 +99,17 @@ type RequestMapAndSessionReply struct {
 	Sessions map[string]Session
 }
 
+type DeleteShardsArgs struct {
+	Id        int64
+	ReqNum    int64
+	Shards    map[int]bool
+	ConfigNum int
+}
+
+type DeleteShardsReply struct {
+	Err Err
+}
+
 type GenericArgs interface {
 	getId() int64
 	getReqNum() int64
@@ -145,6 +157,19 @@ func (args ApplyMovementArgs) getKey() string {
 	return ""
 }
 
+func (args DeleteShardsArgs) getId() int64 {
+	return args.Id
+}
+
+func (args DeleteShardsArgs) getReqNum() int64 {
+	return args.ReqNum
+}
+
+// only define for satisfying interface
+func (args DeleteShardsArgs) getKey() string {
+	return ""
+}
+
 func (args ChangeConfigArgs) getId() int64 {
 	return args.Id
 }
@@ -171,5 +196,9 @@ func (reply *ApplyMovementReply) setErr(err Err) {
 }
 
 func (reply *ChangeConfigReply) setErr(err Err) {
+	reply.Err = err
+}
+
+func (reply *DeleteShardsReply) setErr(err Err) {
 	reply.Err = err
 }

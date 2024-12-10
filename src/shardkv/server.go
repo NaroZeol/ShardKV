@@ -131,6 +131,10 @@ func (kv *ShardKV) RequestMapAndSession(args *RequestMapAndSessionArgs, reply *R
 	reply.Sessions = replySession
 }
 
+func (kv *ShardKV) DeleteShards(args *DeleteShardsArgs, reply *DeleteShardsReply) {
+	kv.handleNormalRPC(args, reply, OT_DeleteShards)
+}
+
 func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType string) {
 	DPrintf("[SKV-S][%v][%v] receive RPC %v: %+v", kv.gid, kv.me, opType, args)
 
@@ -180,6 +184,8 @@ func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType 
 		op.Args = *args.(*ChangeConfigArgs)
 	case OT_ApplyMovement:
 		op.Args = *args.(*ApplyMovementArgs)
+	case OT_DeleteShards:
+		op.Args = *args.(*DeleteShardsArgs)
 	}
 
 	index, _, isLeader := kv.rf.Start(op)
@@ -246,6 +252,9 @@ func (kv *ShardKV) successCommit(args GenericArgs, reply GenericReply, opType st
 	case OT_ApplyMovement:
 		applyMovementReply := reply.(*ApplyMovementReply)
 		applyMovementReply.Err = OK
+	case OT_DeleteShards:
+		deleteShardsReply := reply.(*DeleteShardsReply)
+		deleteShardsReply.Err = OK
 	default:
 		log.Fatal("Wrong switch in successCommit()")
 	}
@@ -312,6 +321,27 @@ func (kv *ShardKV) applyOp(op Op) bool {
 			DPrintf("[SKV-S][%v][%v] update ckSessions[%v] = %v", kv.gid, kv.me, key, value)
 		}
 		return true
+	case OT_DeleteShards:
+		deleteShardsArgs := op.Args.(DeleteShardsArgs)
+		DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: DeleteShards()", kv.gid, kv.me, deleteShardsArgs.Id, deleteShardsArgs.ReqNum)
+
+		// emm... may be some checks?
+		for key, value := range kv.mp {
+			if deleteShardsArgs.Shards[key2shard(key)] {
+				DPrintf("[SKV-S][%v][%v] delete Key: %v, Value: %v", kv.gid, kv.me, key, value)
+				delete(kv.mp, key)
+			}
+		}
+		for uniKey, session := range kv.ckSessions {
+			if deleteShardsArgs.Shards[session.LastOp.ShardNum] {
+				DPrintf("[SKV-S][%v][%v] delete uniKey: %v, session: %+v", kv.gid, kv.me, uniKey, session)
+				delete(kv.ckSessions, uniKey)
+			}
+		}
+
+		DPrintf("[SKV-S][%v][%v] Map: %+v", kv.gid, kv.me, kv.mp)
+		DPrintf("[SKV-S][%v][%v] Session: %+v", kv.gid, kv.me, kv.ckSessions)
+		return true
 	default:
 		log.Fatal("wrong switch in applyOp")
 	}
@@ -337,11 +367,12 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 
 	for i := 0; i < shardctrler.NShards; i++ {
 		if oldConfig.Shards[i] != kv.gid && newConfig.Shards[i] == kv.gid {
+			srcGid := oldConfig.Shards[i]
 			// receiveFrom: gid -> set of needed shards
-			if receiveFrom[oldConfig.Shards[i]] == nil {
-				receiveFrom[oldConfig.Shards[i]] = make(map[int]bool)
+			if receiveFrom[srcGid] == nil {
+				receiveFrom[srcGid] = make(map[int]bool)
 			}
-			receiveFrom[oldConfig.Shards[i]][i] = true
+			receiveFrom[srcGid][i] = true
 		}
 	}
 	DPrintf("[SKV-S][%v][%v] oldConfig: %+v", kv.gid, kv.me, oldConfig)
@@ -357,7 +388,7 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 		go func(gid int, shards map[int]bool) {
 			defer wg.Done()
 
-			for {
+			for !kv.killed() {
 				if servers, ok := oldConfig.Groups[gid]; ok {
 					for si := 0; si < len(servers); si++ {
 						srv := kv.make_end(servers[si])
@@ -423,6 +454,49 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 			continue
 		}
 	}
+
+	for gid, shards := range receiveFrom {
+		wg.Add(1)
+		go func(gid int, shards map[int]bool) {
+			defer wg.Done()
+			DPrintf("[SKV-S][%v][%v] Sending DeleteShards RPC to Group %v", kv.gid, kv.me, gid)
+
+			for !kv.killed() {
+				if servers, ok := oldConfig.Groups[gid]; ok {
+					kv.mu.Lock()
+					args := DeleteShardsArgs{
+						Id:        kv.uid,
+						ReqNum:    kv.localReqNum,
+						Shards:    shards,
+						ConfigNum: newConfig.Num,
+					}
+					kv.localReqNum += 1
+					kv.mu.Unlock()
+
+					for si := 0; si < len(servers); si++ {
+						srv := kv.make_end(servers[si])
+						reply := DeleteShardsReply{}
+						ok := srv.Call("ShardKV.DeleteShards", &args, &reply)
+
+						if ok && reply.Err == OK {
+							DPrintf("[SKV-S][%v][%v] DeleteShards to Server[%v][%v] sucessfully", kv.gid, kv.me, gid, si)
+							return
+						}
+						// ... not ok, or ErrWrongLeader
+						if ok && (reply.Err != OK) {
+							DPrintf("[SKV-S][%v][%v] Server [%v][%v] reply with error: %v", kv.gid, kv.me, gid, si, reply.Err)
+							continue
+						}
+						if !ok {
+							DPrintf("[SKV-S][%v][%v] DeleteShards to [%v][%v] timeout", kv.gid, kv.me, gid, si)
+						}
+					}
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+		}(gid, shards)
+	}
+	wg.Wait()
 	kv.mu.Lock()
 }
 
@@ -606,6 +680,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	labgob.Register(PutAppendArgs{})
 	labgob.Register(ChangeConfigArgs{})
 	labgob.Register(ApplyMovementArgs{})
+	labgob.Register(DeleteShardsArgs{})
 
 	kv := new(ShardKV)
 	kv.me = me
