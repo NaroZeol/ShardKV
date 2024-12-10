@@ -349,8 +349,8 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 	DPrintf("[SKV-S][%v][%v] receiveFrom: %+v", kv.gid, kv.me, receiveFrom)
 
 	// receive From
-	// terrible code style
-	// TODO: rebuild
+	movedMap := make(map[string]string)
+	movedSession := make(map[string]Session)
 	wg := sync.WaitGroup{}
 	for gid, shards := range receiveFrom {
 		wg.Add(1)
@@ -373,29 +373,13 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 						if ok && reply.Err == OK {
 							DPrintf("[SKV-S][%v][%v] RequestMap from Server[%v][%v] sucessfully", kv.gid, kv.me, gid, si)
 							kv.mu.Lock()
-							moveArgs := ApplyMovementArgs{
-								Mp:       reply.Mp,
-								Sessions: reply.Sessions,
-								Id:       kv.uid,
-								ReqNum:   kv.localReqNum,
+							for key, value := range reply.Mp {
+								movedMap[key] = value
 							}
-							kv.localReqNum += 1
+							for key, value := range reply.Sessions {
+								movedSession[key] = value
+							}
 							kv.mu.Unlock()
-
-							DPrintf("[SKV-S][%v][%v] Start Local RPC ApplyMovement $%v", kv.gid, kv.me, moveArgs.ReqNum)
-							for !kv.killed() {
-								moveReply := ApplyMovementReply{}
-								kv.handleNormalRPC(&moveArgs, &moveReply, OT_ApplyMovement)
-								if moveReply.Err == OK {
-									break
-								} else if moveReply.Err == ERR_WrongLeader {
-									DPrintf("[SKV-S][%v][%v] Local RPC ApplyMovement $%v reply with error: %v", kv.gid, kv.me, moveArgs.ReqNum, moveReply.Err)
-									break
-								} else {
-									DPrintf("[SKV-S][%v][%v] Local RPC ApplyMovement $%v reply with error: %v", kv.gid, kv.me, moveArgs.ReqNum, moveReply.Err)
-									continue
-								}
-							}
 							return
 						}
 						// ... not ok, or ErrWrongLeader
@@ -415,6 +399,30 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 	kv.mu.Unlock()
 	wg.Wait()
 
+	kv.mu.Lock()
+	moveArgs := ApplyMovementArgs{
+		Mp:       movedMap,
+		Sessions: movedSession,
+		Id:       kv.uid,
+		ReqNum:   kv.localReqNum,
+	}
+	kv.localReqNum += 1
+	kv.mu.Unlock()
+
+	DPrintf("[SKV-S][%v][%v] Start Local RPC ApplyMovement $%v", kv.gid, kv.me, moveArgs.ReqNum)
+	for !kv.killed() {
+		moveReply := ApplyMovementReply{}
+		kv.handleNormalRPC(&moveArgs, &moveReply, OT_ApplyMovement)
+		if moveReply.Err == OK {
+			break
+		} else if moveReply.Err == ERR_WrongLeader {
+			DPrintf("[SKV-S][%v][%v] Local RPC ApplyMovement $%v reply with error: %v", kv.gid, kv.me, moveArgs.ReqNum, moveReply.Err)
+			break
+		} else {
+			DPrintf("[SKV-S][%v][%v] Local RPC ApplyMovement $%v reply with error: %v", kv.gid, kv.me, moveArgs.ReqNum, moveReply.Err)
+			continue
+		}
+	}
 	kv.mu.Lock()
 }
 
