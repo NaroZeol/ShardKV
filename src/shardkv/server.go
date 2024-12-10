@@ -100,7 +100,7 @@ func (kv *ShardKV) Append(args *PutAppendArgs, reply *PutAppendReply) {
 }
 
 func (kv *ShardKV) RequestMapAndSession(args *RequestMapAndSessionArgs, reply *RequestMapAndSessionReply) {
-	DPrintf("[SKV-S][%v][%v] receive RPC RequestMap from [%v][%v]", kv.gid, kv.me, args.Gid, args.Me)
+	DPrintf("[SKV-S][%v][%v] receive RPC RequestMapAndSession from [%v][%v]", kv.gid, kv.me, args.Gid, args.Me)
 	replyMp := make(map[string]string)
 	replySession := make(map[string]Session, 0)
 
@@ -398,6 +398,7 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 		go func(gid int, shards map[int]bool) {
 			defer wg.Done()
 
+			tryTimes := 10
 			for !kv.killed() {
 				if servers, ok := oldConfig.Groups[gid]; ok {
 					for si := 0; si < len(servers); si++ {
@@ -412,7 +413,7 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 						ok := srv.Call("ShardKV.RequestMapAndSession", &args, &reply)
 
 						if ok && reply.Err == OK {
-							DPrintf("[SKV-S][%v][%v] RequestMap from Server[%v][%v] sucessfully", kv.gid, kv.me, gid, si)
+							DPrintf("[SKV-S][%v][%v] RequestMapAndSession from Server[%v][%v] sucessfully", kv.gid, kv.me, gid, si)
 							kv.mu.Lock()
 							for key, value := range reply.Mp {
 								movedMap[key] = value
@@ -429,8 +430,19 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 							continue
 						}
 						if !ok {
-							DPrintf("[SKV-S][%v][%v] RequestMap to [%v][%v] timeout", kv.gid, kv.me, gid, si)
+							DPrintf("[SKV-S][%v][%v] RequestMapAndSession to [%v][%v] timeout", kv.gid, kv.me, gid, si)
+							continue
 						}
+					}
+				}
+				if tryTimes -= 1; tryTimes <= 0 {
+					latestConfig := kv.mck.Query(-1)
+					if len(latestConfig.Groups[gid]) == 0 {
+						delete(receiveFrom, gid)
+						DPrintf("[SKV-S][%v][%v] group %v crashed in latestConfig", kv.gid, kv.me, gid)
+						return
+					} else {
+						tryTimes = 10
 					}
 				}
 				time.Sleep(100 * time.Millisecond)
