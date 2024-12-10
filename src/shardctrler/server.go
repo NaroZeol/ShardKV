@@ -22,7 +22,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-const ConfigChangeTrace = true
+const ConfigChangeTrace = false
 
 func ConfigChangeTracePrintf(format string, a ...interface{}) (n int, err error) {
 	if ConfigChangeTrace {

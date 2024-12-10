@@ -24,9 +24,12 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 type Session struct {
-	LastOp      Op
 	LastOpVaild bool
 	LastOpIndex int
+
+	LastOpNumber   int64
+	LastOpReqNum   int64
+	LastOpShardNum int
 }
 
 type Op struct {
@@ -120,7 +123,7 @@ func (kv *ShardKV) RequestMapAndSession(args *RequestMapAndSessionArgs, reply *R
 	}
 	for key, value := range kv.ckSessions {
 		// Client's Id is a positive number
-		if key[0] != '-' && args.Shards[value.LastOp.ShardNum] {
+		if key[0] != '-' && args.Shards[value.LastOpShardNum] {
 			replySession[key] = value
 		}
 	}
@@ -156,8 +159,8 @@ func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType 
 	// use to identify each client's operation on different shards
 	uniKey := strconv.FormatInt(args.getId(), 10) + strconv.FormatInt(int64(key2shard(args.getKey())), 10)
 
-	if session := kv.ckSessions[uniKey]; session.LastOpVaild && session.LastOp.ReqNum == args.getReqNum() {
-		if op, ok := kv.logRecord[session.LastOpIndex]; ok && op.Number == session.LastOp.Number {
+	if session := kv.ckSessions[uniKey]; session.LastOpVaild && session.LastOpReqNum == args.getReqNum() {
+		if op, ok := kv.logRecord[session.LastOpIndex]; ok && op.Number == session.LastOpNumber {
 			kv.successCommit(args, reply, opType)
 			DPrintf("[SKV-S][%v][%v] reply success because [%v]$%v has completed", kv.gid, kv.me, args.getId(), args.getReqNum())
 			kv.mu.Unlock()
@@ -333,7 +336,7 @@ func (kv *ShardKV) applyOp(op Op) bool {
 			}
 		}
 		for uniKey, session := range kv.ckSessions {
-			if deleteShardsArgs.Shards[session.LastOp.ShardNum] {
+			if deleteShardsArgs.Shards[session.LastOpShardNum] {
 				DPrintf("[SKV-S][%v][%v] delete uniKey: %v, session: %+v", kv.gid, kv.me, uniKey, session)
 				delete(kv.ckSessions, uniKey)
 			}
@@ -518,10 +521,12 @@ func (kv *ShardKV) handleApplyMsg() {
 
 			// stable operation, don't change state machine
 			if session := kv.ckSessions[uniKey]; session.LastOpVaild && session.LastOpIndex < applyMsg.CommandIndex &&
-				op.ReqNum <= session.LastOp.ReqNum {
-				DPrintf("[SKV-S][%v][%v] stable operation #%v for [%v] ($%v <= $%v), do not change state machine", kv.gid, kv.me, applyMsg.CommandIndex, op.CkId, op.ReqNum, session.LastOp.ReqNum)
+				op.ReqNum <= session.LastOpReqNum {
+				DPrintf("[SKV-S][%v][%v] stable operation #%v for [%v] ($%v <= $%v), do not change state machine", kv.gid, kv.me, applyMsg.CommandIndex, op.CkId, op.ReqNum, session.LastOpReqNum)
 
-				session.LastOp = op
+				session.LastOpNumber = op.Number
+				session.LastOpReqNum = op.ReqNum
+				session.LastOpShardNum = op.ShardNum
 				session.LastOpIndex = applyMsg.CommandIndex
 				session.LastOpVaild = true
 				kv.ckSessions[uniKey] = session
@@ -536,7 +541,9 @@ func (kv *ShardKV) handleApplyMsg() {
 				kv.logRecord[applyMsg.CommandIndex] = op
 			} else { // update session only after applying successfully
 				s := kv.ckSessions[uniKey]
-				s.LastOp = op
+				s.LastOpNumber = op.Number
+				s.LastOpReqNum = op.ReqNum
+				s.LastOpShardNum = op.ShardNum
 				s.LastOpIndex = applyMsg.CommandIndex
 				s.LastOpVaild = true
 				kv.ckSessions[uniKey] = s
