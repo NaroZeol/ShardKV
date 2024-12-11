@@ -368,16 +368,16 @@ func (kv *ShardKV) applyOp(op Op) bool {
 	return false
 }
 
-func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrler.Config) {
+func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrler.Config) bool {
 	// should hold kv.mu
 
 	// do nothing if it's this first config
 	if oldConfig.Num == 0 {
-		return
+		return true
 	}
 
 	if oldConfig.Num == newConfig.Num {
-		return
+		return true
 	}
 
 	// which shard should receive from. (gid -> {set of needed shards})
@@ -447,7 +447,7 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 					latestConfig := kv.mck.Query(-1)
 					if len(latestConfig.Groups[gid]) == 0 {
 						delete(receiveFrom, gid)
-						DPrintf("[SKV-S][%v][%v] group %v crashed in latestConfig", kv.gid, kv.me, gid)
+						DPrintf("[SKV-S][%v][%v] group %v crashed in latestConfig, ignore collecting data from this group", kv.gid, kv.me, gid)
 						return
 					} else {
 						tryTimes = 10
@@ -472,14 +472,15 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 	kv.mu.Unlock()
 
 	DPrintf("[SKV-S][%v][%v] Start Local RPC ApplyMovement $%v", kv.gid, kv.me, moveArgs.ReqNum)
-	applyMovementOK := false
+	isLeader := false
 	for !kv.killed() {
 		moveReply := ApplyMovementReply{}
 		kv.handleNormalRPC(&moveArgs, &moveReply, OT_ApplyMovement)
 		if moveReply.Err == OK {
-			applyMovementOK = true
+			isLeader = true
 			break
 		} else if moveReply.Err == ERR_WrongLeader {
+			isLeader = false
 			DPrintf("[SKV-S][%v][%v] Local RPC ApplyMovement $%v reply with error: %v", kv.gid, kv.me, moveArgs.ReqNum, moveReply.Err)
 			break
 		} else {
@@ -488,9 +489,10 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 		}
 	}
 
-	if kv.killed() || !applyMovementOK {
+	if kv.killed() || !isLeader {
 		kv.mu.Lock()
-		return // return to avoid deletion
+		DPrintf("[SKV-S][%v][%v] stop sending ApplyMovement because not a leader", kv.gid, kv.me)
+		return false // return to avoid deletion
 	}
 
 	// Send DeleteShards only after ApplyMovement succeed
@@ -538,6 +540,8 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 	}
 	wg.Wait()
 	kv.mu.Lock()
+
+	return true
 }
 
 func (kv *ShardKV) handleApplyMsg() {
@@ -642,9 +646,17 @@ func (kv *ShardKV) pollConfig() {
 		kv.ckMu.Lock() // block client request
 		kv.mu.Lock()
 		for kv.config.Num < latestConfig.Num {
-			nextConfig := kv.mck.Query(kv.config.Num + 1)
+			if _, isLeader := kv.rf.GetState(); !isLeader {
+				DPrintf("[SKV-S][%v][%v] stop changing config because it's not a leader", kv.gid, kv.me)
+				break
+			}
 
-			kv.MoveShards(kv.config, nextConfig)
+			nextConfig := kv.mck.Query(kv.config.Num + 1)
+			moveOK := kv.MoveShards(kv.config, nextConfig)
+			if !moveOK {
+				continue
+			}
+
 			args := ChangeConfigArgs{
 				Id:     kv.uid,
 				ReqNum: kv.localReqNum,
