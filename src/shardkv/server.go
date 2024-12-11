@@ -406,7 +406,6 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 		go func(gid int, shards map[int]bool) {
 			defer wg.Done()
 
-			tryTimes := 10
 			for !kv.killed() {
 				if servers, ok := oldConfig.Groups[gid]; ok {
 					for si := 0; si < len(servers); si++ {
@@ -441,16 +440,6 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 							DPrintf("[SKV-S][%v][%v] RequestMapAndSession to [%v][%v] timeout", kv.gid, kv.me, gid, si)
 							continue
 						}
-					}
-				}
-				if tryTimes -= 1; tryTimes <= 0 {
-					latestConfig := kv.mck.Query(-1)
-					if len(latestConfig.Groups[gid]) == 0 {
-						delete(receiveFrom, gid)
-						DPrintf("[SKV-S][%v][%v] group %v crashed in latestConfig, ignore collecting data from this group", kv.gid, kv.me, gid)
-						return
-					} else {
-						tryTimes = 10
 					}
 				}
 				time.Sleep(100 * time.Millisecond)
