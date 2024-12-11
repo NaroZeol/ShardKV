@@ -67,6 +67,7 @@ type ApplyMovementArgs struct {
 	Mp       map[string]string
 	Sessions map[string]Session
 	Config   shardctrler.Config
+	Shards   map[int]bool
 }
 
 type ApplyMovementReply struct {

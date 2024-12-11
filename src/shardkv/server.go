@@ -44,7 +44,6 @@ type Op struct {
 
 type ShardKV struct {
 	mu       sync.Mutex
-	ckMu     sync.Mutex // client request mutex to block all client request when configuration changing
 	me       int
 	rf       *raft.Raft
 	applyCh  chan raft.ApplyMsg
@@ -53,8 +52,6 @@ type ShardKV struct {
 	ctrlers  []*labrpc.ClientEnd
 	mck      *shardctrler.Clerk
 	config   shardctrler.Config
-
-	preConfig shardctrler.Config // must be later than ShardKV.config
 
 	dead int32
 
@@ -70,6 +67,7 @@ type ShardKV struct {
 	uid           int64
 	localReqNum   int64
 	shardLastNums [shardctrler.NShards]int
+	allowShardVec [shardctrler.NShards]bool
 
 	snapShotIndex int
 }
@@ -83,36 +81,15 @@ type Snapshot struct {
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
-	if kv.preConfig.Shards[key2shard(args.Key)] != kv.gid {
-		// if preConfig says not this shard(for Challenge 2)
-		kv.ckMu.Lock()
-		kv.handleNormalRPC(args, reply, OT_GET)
-		kv.ckMu.Unlock()
-	} else {
-		kv.handleNormalRPC(args, reply, OT_GET)
-	}
+	kv.handleNormalRPC(args, reply, OT_GET)
 }
 
 func (kv *ShardKV) Put(args *PutAppendArgs, reply *PutAppendReply) {
-	if kv.preConfig.Shards[key2shard(args.Key)] != kv.gid {
-		// if preConfig says not this shard(for Challenge 2)
-		kv.ckMu.Lock()
-		kv.handleNormalRPC(args, reply, OT_PUT)
-		kv.ckMu.Unlock()
-	} else {
-		kv.handleNormalRPC(args, reply, OT_PUT)
-	}
+	kv.handleNormalRPC(args, reply, OT_PUT)
 }
 
 func (kv *ShardKV) Append(args *PutAppendArgs, reply *PutAppendReply) {
-	if kv.preConfig.Shards[key2shard(args.Key)] != kv.gid {
-		// if preConfig says not this shard(for Challenge 2)
-		kv.ckMu.Lock()
-		kv.handleNormalRPC(args, reply, OT_APPEND)
-		kv.ckMu.Unlock()
-	} else {
-		kv.handleNormalRPC(args, reply, OT_APPEND)
-	}
+	kv.handleNormalRPC(args, reply, OT_APPEND)
 }
 
 func (kv *ShardKV) RequestMapAndSession(args *RequestMapAndSessionArgs, reply *RequestMapAndSessionReply) {
@@ -154,6 +131,22 @@ func (kv *ShardKV) DeleteShards(args *DeleteShardsArgs, reply *DeleteShardsReply
 	kv.handleNormalRPC(args, reply, OT_DeleteShards)
 }
 
+func (kv *ShardKV) ApplyMovement(args *ApplyMovementArgs, reply *ApplyMovementReply) {
+	DPrintf("[SKV-S][%v][%v] Start RPC $%v ApplyMovement(%+v) ", kv.gid, kv.me, args.ReqNum, *args)
+	for !kv.killed() {
+		kv.handleNormalRPC(args, reply, OT_ApplyMovement)
+		if reply.Err == OK {
+			break
+		} else if reply.Err == ERR_WrongLeader {
+			DPrintf("[SKV-S][%v][%v] Local RPC ApplyMovement $%v reply with error: %v", kv.gid, kv.me, args.ReqNum, reply.Err)
+			break
+		} else {
+			DPrintf("[SKV-S][%v][%v] Local RPC ApplyMovement $%v reply with error: %v", kv.gid, kv.me, args.ReqNum, reply.Err)
+			continue
+		}
+	}
+}
+
 func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType string) {
 	DPrintf("[SKV-S][%v][%v] receive RPC %v: %+v", kv.gid, kv.me, opType, args)
 
@@ -165,8 +158,9 @@ func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType 
 		return
 	}
 
-	if 0 <= args.getId() && kv.config.Shards[key2shard(args.getKey())] != kv.gid {
+	if 0 <= args.getId() && !kv.allowShardVec[key2shard(args.getKey())] {
 		reply.setErr(ERR_WrongGroup)
+		DPrintf("[SKV-S][%v][%v] reply client with WrongGroup, allowShardVec: %v", kv.gid, kv.me, kv.allowShardVec)
 		kv.mu.Unlock()
 		return
 	}
@@ -286,7 +280,7 @@ func (kv *ShardKV) applyOp(op Op) bool {
 	switch op.Type {
 	case OT_GET:
 		getArgs := op.Args.(GetArgs)
-		if kv.config.Shards[key2shard(getArgs.Key)] == kv.gid {
+		if kv.allowShardVec[key2shard(getArgs.Key)] {
 			DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: Get(%v)", kv.gid, kv.me, getArgs.Id, getArgs.ReqNum, getArgs.Key)
 			return true
 		} else {
@@ -295,7 +289,7 @@ func (kv *ShardKV) applyOp(op Op) bool {
 		}
 	case OT_PUT:
 		putArgs := op.Args.(PutAppendArgs)
-		if kv.config.Shards[key2shard(putArgs.Key)] == kv.gid {
+		if kv.allowShardVec[key2shard(putArgs.Key)] {
 			kv.mp[putArgs.Key] = putArgs.Value
 			DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: Put(%v, %v)", kv.gid, kv.me, putArgs.Id, putArgs.ReqNum, putArgs.Key, putArgs.Value)
 			return true
@@ -305,7 +299,7 @@ func (kv *ShardKV) applyOp(op Op) bool {
 		}
 	case OT_APPEND:
 		appendArgs := op.Args.(PutAppendArgs)
-		if kv.config.Shards[key2shard(appendArgs.Key)] == kv.gid {
+		if kv.allowShardVec[key2shard(appendArgs.Key)] {
 			kv.mp[appendArgs.Key] = kv.mp[appendArgs.Key] + appendArgs.Value
 			DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: Append(%v, %v)", kv.gid, kv.me, appendArgs.Id, appendArgs.ReqNum, appendArgs.Key, appendArgs.Value)
 			return true
@@ -318,14 +312,17 @@ func (kv *ShardKV) applyOp(op Op) bool {
 
 		DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: ChangeConfig(%v)", kv.gid, kv.me, changeConfigArgs.Id, changeConfigArgs.ReqNum, changeConfigArgs.NewNum)
 		if kv.config.Num < changeConfigArgs.Config.Num {
-			kv.preConfig = changeConfigArgs.Config
 			kv.config = changeConfigArgs.Config
 			for shard, gid := range changeConfigArgs.Config.Shards {
 				if gid == kv.gid {
+					kv.allowShardVec[shard] = true
 					kv.shardLastNums[shard] = changeConfigArgs.Config.Num
+				} else {
+					kv.allowShardVec[shard] = false // do not allow this shard
 				}
 			}
 			DPrintf("[SKV-S][%v][%v] Change config to %v successfuly", kv.gid, kv.me, changeConfigArgs.Config.Num)
+			DPrintf("[SKV-S][%v][%v] AllowShardVec: %+v", kv.gid, kv.me, kv.allowShardVec)
 		} else {
 			DPrintf("[SKV-S][%v][%v] ChangeConfig(%v): kv.config is already %v", kv.gid, kv.me, changeConfigArgs.NewNum, kv.config.Num)
 		}
@@ -335,20 +332,28 @@ func (kv *ShardKV) applyOp(op Op) bool {
 
 		DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: applyMovement()", kv.gid, kv.me, applyMovementArgs.Id, applyMovementArgs.ReqNum)
 		for key, value := range applyMovementArgs.Mp {
+			if kv.shardLastNums[key2shard(key)] >= applyMovementArgs.Config.Num {
+				DPrintf("[SKV-S][%v][%v] Refuse to set Key: %v, Value: %v, Shard: %v because same up-to-date num", kv.gid, kv.me, key, value, key2shard(key))
+				continue
+			}
 			kv.mp[key] = value
 			DPrintf("[SKV-S][%v][%v] Set Key: %v, Value: %v, Shard: %v", kv.gid, kv.me, key, value, key2shard(key))
 		}
 		for key, value := range applyMovementArgs.Sessions {
+			if kv.shardLastNums[value.LastOpShardNum] >= applyMovementArgs.Config.Num {
+				DPrintf("[SKV-S][%v][%v] Refuse to update ckSessions[%v] = %v", kv.gid, kv.me, key, value)
+				continue
+			}
 			value.LastOpIndex = -1 // temporary solution for fix, TODO, a better way
 			kv.ckSessions[key] = value
 			DPrintf("[SKV-S][%v][%v] update ckSessions[%v] = %v", kv.gid, kv.me, key, value)
 		}
 
-		for shard, gid := range applyMovementArgs.Config.Shards {
-			if gid == kv.gid {
-				kv.shardLastNums[shard] = applyMovementArgs.Config.Num
-			}
+		for shard := range applyMovementArgs.Shards {
+			kv.allowShardVec[shard] = true // allow to handle this shard
+			kv.shardLastNums[shard] = applyMovementArgs.Config.Num
 		}
+		DPrintf("[SKV-S][%v][%v] AllowShardVec: %+v", kv.gid, kv.me, kv.allowShardVec)
 		return true
 	case OT_DeleteShards:
 		deleteShardsArgs := op.Args.(DeleteShardsArgs)
@@ -419,9 +424,9 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 	DPrintf("[SKV-S][%v][%v] receiveFrom: %+v", kv.gid, kv.me, receiveFrom)
 
 	// receive From
-	movedMap := make(map[string]string)
-	movedSession := make(map[string]Session)
 	wg := sync.WaitGroup{}
+	sendApplyMovementLock := sync.Mutex{} // only allow single applyMovement at a moment to avoid ReqNum conflict
+	applyMovementFail := int32(0)
 	for gid, shards := range receiveFrom {
 		wg.Add(1)
 		go func(gid int, shards map[int]bool) {
@@ -441,15 +446,27 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 						ok := srv.Call("ShardKV.RequestMapAndSession", &args, &reply)
 
 						if ok && reply.Err == OK {
-							DPrintf("[SKV-S][%v][%v] RequestMapAndSession from Server[%v][%v] sucessfully", kv.gid, kv.me, gid, si)
+							DPrintf("[SKV-S][%v][%v] RequestMapAndSession(%+v) from Server[%v][%v] sucessfully", kv.gid, kv.me, args, gid, si)
+							sendApplyMovementLock.Lock()
 							kv.mu.Lock()
-							for key, value := range reply.Mp {
-								movedMap[key] = value
+							moveArgs := ApplyMovementArgs{
+								Mp:       reply.Mp,
+								Sessions: reply.Sessions,
+								Config:   newConfig,
+								Id:       kv.uid,
+								ReqNum:   kv.localReqNum,
+								Shards:   shards,
 							}
-							for key, value := range reply.Sessions {
-								movedSession[key] = value
-							}
+							moveReply := ApplyMovementReply{}
+							kv.localReqNum += 1
 							kv.mu.Unlock()
+
+							kv.ApplyMovement(&moveArgs, &moveReply)
+							if moveReply.Err != OK {
+								atomic.StoreInt32(&applyMovementFail, 1)
+								DPrintf("[SKV-S][%v][%v] Set applyMovementFail to 1", kv.gid, kv.me)
+							}
+							sendApplyMovementLock.Unlock()
 							return
 						}
 						// ... not ok, or ErrWrongLeader
@@ -470,38 +487,9 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 	kv.mu.Unlock()
 	wg.Wait()
 
-	kv.mu.Lock()
-	moveArgs := ApplyMovementArgs{
-		Mp:       movedMap,
-		Sessions: movedSession,
-		Config:   newConfig,
-		Id:       kv.uid,
-		ReqNum:   kv.localReqNum,
-	}
-	kv.localReqNum += 1
-	kv.mu.Unlock()
-
-	DPrintf("[SKV-S][%v][%v] Start Local RPC ApplyMovement $%v", kv.gid, kv.me, moveArgs.ReqNum)
-	isLeader := false
-	for !kv.killed() {
-		moveReply := ApplyMovementReply{}
-		kv.handleNormalRPC(&moveArgs, &moveReply, OT_ApplyMovement)
-		if moveReply.Err == OK {
-			isLeader = true
-			break
-		} else if moveReply.Err == ERR_WrongLeader {
-			isLeader = false
-			DPrintf("[SKV-S][%v][%v] Local RPC ApplyMovement $%v reply with error: %v", kv.gid, kv.me, moveArgs.ReqNum, moveReply.Err)
-			break
-		} else {
-			DPrintf("[SKV-S][%v][%v] Local RPC ApplyMovement $%v reply with error: %v", kv.gid, kv.me, moveArgs.ReqNum, moveReply.Err)
-			continue
-		}
-	}
-
-	if kv.killed() || !isLeader {
+	if _, isLeader := kv.rf.GetState(); !isLeader || kv.killed() || applyMovementFail == 1 {
 		kv.mu.Lock()
-		DPrintf("[SKV-S][%v][%v] stop sending ApplyMovement because not a leader", kv.gid, kv.me)
+		DPrintf("[SKV-S][%v][%v] stop sending ApplyMovement because not a leader or killed", kv.gid, kv.me)
 		return false // return to avoid deletion
 	}
 
@@ -635,12 +623,20 @@ func (kv *ShardKV) handleApplyMsg() {
 			kv.mp = snapshot.Mp
 			kv.ckSessions = snapshot.CkSessions
 			kv.config = snapshot.Config
-			kv.preConfig = snapshot.Config
 			kv.shardLastNums = snapshot.ShardLastNums
 			kv.lastApplied = applyMsg.SnapshotIndex
 
+			for shard, gid := range kv.config.Shards {
+				if gid == kv.gid {
+					kv.allowShardVec[shard] = true
+				} else {
+					kv.allowShardVec[shard] = false
+				}
+			}
+
 			DPrintf("[SKV-S][%v][%v] apply snapshot up to #%v successfully, maker [%v]", kv.gid, kv.me, applyMsg.SnapshotIndex, snapshot.Maker)
 			DPrintf("[SKV-S][%v][%v] Config: %+v", kv.gid, kv.me, kv.config)
+			DPrintf("[SKV-S][%v][%v] AllowShardVec: %+v", kv.gid, kv.me, kv.allowShardVec)
 			kv.mu.Unlock()
 		}
 	}
@@ -654,7 +650,6 @@ func (kv *ShardKV) pollConfig() {
 		}
 		latestConfig := kv.mck.Query(-1)
 
-		kv.ckMu.Lock() // block client request
 		kv.mu.Lock()
 		for kv.config.Num < latestConfig.Num {
 			if _, isLeader := kv.rf.GetState(); !isLeader {
@@ -663,7 +658,14 @@ func (kv *ShardKV) pollConfig() {
 			}
 
 			nextConfig := kv.mck.Query(kv.config.Num + 1)
-			kv.preConfig = nextConfig
+			for i := 0; i < shardctrler.NShards; i++ {
+				if kv.gid == kv.config.Shards[i] && kv.gid == nextConfig.Shards[i] {
+					kv.allowShardVec[i] = true
+				} else {
+					kv.allowShardVec[i] = false
+				}
+			}
+
 			moveOK := kv.MoveShards(kv.config, nextConfig)
 			if !moveOK {
 				continue
@@ -695,7 +697,6 @@ func (kv *ShardKV) pollConfig() {
 			kv.mu.Lock()
 		}
 		kv.mu.Unlock()
-		kv.ckMu.Unlock()
 
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -759,7 +760,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.gid = gid
 	kv.ctrlers = ctrlers
 	kv.config = shardctrler.Config{}
-	kv.preConfig = shardctrler.Config{}
 
 	kv.persister = persister
 	kv.applyCh = make(chan raft.ApplyMsg)
