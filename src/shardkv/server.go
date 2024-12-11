@@ -65,17 +65,19 @@ type ShardKV struct {
 	confirmMap  map[int]bool
 	lastApplied int
 
-	uid         int64
-	localReqNum int64
+	uid           int64
+	localReqNum   int64
+	shardLastNums [shardctrler.NShards]int
 
 	snapShotIndex int
 }
 
 type Snapshot struct {
-	Mp         map[string]string
-	CkSessions map[string]Session
-	Config     shardctrler.Config
-	Maker      int // for debug
+	Mp            map[string]string
+	CkSessions    map[string]Session
+	Config        shardctrler.Config
+	ShardLastNums [shardctrler.NShards]int
+	Maker         int // for debug
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
@@ -292,8 +294,6 @@ func (kv *ShardKV) applyOp(op Op) bool {
 		if kv.config.Shards[key2shard(appendArgs.Key)] == kv.gid {
 			kv.mp[appendArgs.Key] = kv.mp[appendArgs.Key] + appendArgs.Value
 			DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: Append(%v, %v)", kv.gid, kv.me, appendArgs.Id, appendArgs.ReqNum, appendArgs.Key, appendArgs.Value)
-			// TODO: remove this temp printf
-			DPrintf("Current {%v}: %v", appendArgs.Key, kv.mp[appendArgs.Key])
 			return true
 		} else {
 			DPrintf("[SKV-S][%v][%v] Failed to apply Op: Append(%v, %v)", kv.gid, kv.me, appendArgs.Key, appendArgs.Value)
@@ -305,6 +305,11 @@ func (kv *ShardKV) applyOp(op Op) bool {
 		DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: ChangeConfig(%v)", kv.gid, kv.me, changeConfigArgs.Id, changeConfigArgs.ReqNum, changeConfigArgs.NewNum)
 		if kv.config.Num < changeConfigArgs.Config.Num {
 			kv.config = changeConfigArgs.Config
+			for shard, gid := range changeConfigArgs.Config.Shards {
+				if gid == kv.gid {
+					kv.shardLastNums[shard] = changeConfigArgs.Config.Num
+				}
+			}
 			DPrintf("[SKV-S][%v][%v] Change config to %v successfuly", kv.gid, kv.me, changeConfigArgs.Config.Num)
 		} else {
 			DPrintf("[SKV-S][%v][%v] ChangeConfig(%v): kv.config is already %v", kv.gid, kv.me, changeConfigArgs.NewNum, kv.config.Num)
@@ -326,15 +331,18 @@ func (kv *ShardKV) applyOp(op Op) bool {
 		return true
 	case OT_DeleteShards:
 		deleteShardsArgs := op.Args.(DeleteShardsArgs)
-		DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: DeleteShards()", kv.gid, kv.me, deleteShardsArgs.Id, deleteShardsArgs.ReqNum)
+		DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: DeleteShards(%+v)", kv.gid, kv.me, deleteShardsArgs.Id, deleteShardsArgs.ReqNum, deleteShardsArgs)
 
 		// ensure this shard is indeed unneeded
 		deletedShards := deleteShardsArgs.Shards
-		for shards := range deletedShards {
-			if kv.config.Shards[shards] == kv.gid {
-				delete(deletedShards, shards)
+		for shard := range deletedShards {
+			if deleteShardsArgs.ConfigNum < kv.shardLastNums[shard] {
+				DPrintf("[SKV-S][%v][%v] refuse to delete shard %v because of higher shardLastNum", kv.gid, kv.me, shard)
+				delete(deletedShards, shard)
 			}
 		}
+
+		DPrintf("[SKV-S][%v][%v] deleteConfigNum: %v, deletedShards: %+v, shardLastNums: %+v", kv.gid, kv.me, deleteShardsArgs.ConfigNum, deletedShards, kv.shardLastNums)
 
 		for key, value := range kv.mp {
 			if deletedShards[key2shard(key)] {
@@ -454,6 +462,7 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 
 	kv.mu.Lock()
 	moveArgs := ApplyMovementArgs{
+		Num:      newConfig.Num,
 		Mp:       movedMap,
 		Sessions: movedSession,
 		Id:       kv.uid,
@@ -587,10 +596,11 @@ func (kv *ShardKV) handleApplyMsg() {
 				}
 
 				newSnapshot := Snapshot{
-					Mp:         kv.mp,
-					CkSessions: kv.ckSessions,
-					Config:     kv.config,
-					Maker:      kv.me,
+					Mp:            kv.mp,
+					CkSessions:    kv.ckSessions,
+					Config:        kv.config,
+					ShardLastNums: kv.shardLastNums,
+					Maker:         kv.me,
 				}
 				buffer := new(bytes.Buffer)
 				encoder := labgob.NewEncoder(buffer)
@@ -611,6 +621,7 @@ func (kv *ShardKV) handleApplyMsg() {
 			kv.mp = snapshot.Mp
 			kv.ckSessions = snapshot.CkSessions
 			kv.config = snapshot.Config
+			kv.shardLastNums = snapshot.ShardLastNums
 			kv.lastApplied = applyMsg.SnapshotIndex
 
 			DPrintf("[SKV-S][%v][%v] apply snapshot up to #%v successfully, maker [%v]", kv.gid, kv.me, applyMsg.SnapshotIndex, snapshot.Maker)
