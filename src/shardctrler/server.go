@@ -23,6 +23,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 const ConfigChangeTrace = false
+const ConfigReport = true
 
 func ConfigChangeTracePrintf(format string, a ...interface{}) (n int, err error) {
 	if ConfigChangeTrace {
@@ -503,6 +504,24 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc.lastApplied = 0
 
 	go sc.handleApplyMsg()
+	if ConfigReport {
+		go func() {
+			for !sc.killed() {
+				if _, isLeader := sc.rf.GetState(); !isLeader {
+					time.Sleep(1 * time.Second)
+					continue
+				}
+
+				sc.mu.Lock()
+				log.Printf("[SC-S][%v] Report Config: ", sc.me)
+				for i, cfg := range sc.configs {
+					log.Printf("[SC-S][%v] Config %v: %+v", sc.me, i, cfg)
+				}
+				sc.mu.Unlock()
+				time.Sleep(1 * time.Second)
+			}
+		}()
+	}
 
 	return sc
 }
