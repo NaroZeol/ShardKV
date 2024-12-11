@@ -54,6 +54,8 @@ type ShardKV struct {
 	mck      *shardctrler.Clerk
 	config   shardctrler.Config
 
+	preConfig shardctrler.Config // must be later than ShardKV.config
+
 	dead int32
 
 	maxraftstate int // snapshot if log grows this big
@@ -81,24 +83,36 @@ type Snapshot struct {
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
-	kv.ckMu.Lock()
-	defer kv.ckMu.Unlock()
-
-	kv.handleNormalRPC(args, reply, OT_GET)
+	if kv.preConfig.Shards[key2shard(args.Key)] != kv.gid {
+		// if preConfig says not this shard(for Challenge 2)
+		kv.ckMu.Lock()
+		kv.handleNormalRPC(args, reply, OT_GET)
+		kv.ckMu.Unlock()
+	} else {
+		kv.handleNormalRPC(args, reply, OT_GET)
+	}
 }
 
 func (kv *ShardKV) Put(args *PutAppendArgs, reply *PutAppendReply) {
-	kv.ckMu.Lock()
-	defer kv.ckMu.Unlock()
-
-	kv.handleNormalRPC(args, reply, OT_PUT)
+	if kv.preConfig.Shards[key2shard(args.Key)] != kv.gid {
+		// if preConfig says not this shard(for Challenge 2)
+		kv.ckMu.Lock()
+		kv.handleNormalRPC(args, reply, OT_PUT)
+		kv.ckMu.Unlock()
+	} else {
+		kv.handleNormalRPC(args, reply, OT_PUT)
+	}
 }
 
 func (kv *ShardKV) Append(args *PutAppendArgs, reply *PutAppendReply) {
-	kv.ckMu.Lock()
-	defer kv.ckMu.Unlock()
-
-	kv.handleNormalRPC(args, reply, OT_APPEND)
+	if kv.preConfig.Shards[key2shard(args.Key)] != kv.gid {
+		// if preConfig says not this shard(for Challenge 2)
+		kv.ckMu.Lock()
+		kv.handleNormalRPC(args, reply, OT_APPEND)
+		kv.ckMu.Unlock()
+	} else {
+		kv.handleNormalRPC(args, reply, OT_APPEND)
+	}
 }
 
 func (kv *ShardKV) RequestMapAndSession(args *RequestMapAndSessionArgs, reply *RequestMapAndSessionReply) {
@@ -304,6 +318,7 @@ func (kv *ShardKV) applyOp(op Op) bool {
 
 		DPrintf("[SKV-S][%v][%v] Apply Op [%v]$%v: ChangeConfig(%v)", kv.gid, kv.me, changeConfigArgs.Id, changeConfigArgs.ReqNum, changeConfigArgs.NewNum)
 		if kv.config.Num < changeConfigArgs.Config.Num {
+			kv.preConfig = changeConfigArgs.Config
 			kv.config = changeConfigArgs.Config
 			for shard, gid := range changeConfigArgs.Config.Shards {
 				if gid == kv.gid {
@@ -620,6 +635,7 @@ func (kv *ShardKV) handleApplyMsg() {
 			kv.mp = snapshot.Mp
 			kv.ckSessions = snapshot.CkSessions
 			kv.config = snapshot.Config
+			kv.preConfig = snapshot.Config
 			kv.shardLastNums = snapshot.ShardLastNums
 			kv.lastApplied = applyMsg.SnapshotIndex
 
@@ -647,6 +663,7 @@ func (kv *ShardKV) pollConfig() {
 			}
 
 			nextConfig := kv.mck.Query(kv.config.Num + 1)
+			kv.preConfig = nextConfig
 			moveOK := kv.MoveShards(kv.config, nextConfig)
 			if !moveOK {
 				continue
@@ -742,6 +759,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.gid = gid
 	kv.ctrlers = ctrlers
 	kv.config = shardctrler.Config{}
+	kv.preConfig = shardctrler.Config{}
 
 	kv.persister = persister
 	kv.applyCh = make(chan raft.ApplyMsg)
