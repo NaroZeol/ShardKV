@@ -64,9 +64,9 @@ type ApplyMovementArgs struct {
 	Id     int64
 	ReqNum int64
 
-	Num      int
 	Mp       map[string]string
 	Sessions map[string]Session
+	Config   shardctrler.Config
 }
 
 type ApplyMovementReply struct {

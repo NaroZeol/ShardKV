@@ -328,6 +328,12 @@ func (kv *ShardKV) applyOp(op Op) bool {
 			kv.ckSessions[key] = value
 			DPrintf("[SKV-S][%v][%v] update ckSessions[%v] = %v", kv.gid, kv.me, key, value)
 		}
+
+		for shard, gid := range applyMovementArgs.Config.Shards {
+			if gid == kv.gid {
+				kv.shardLastNums[shard] = applyMovementArgs.Config.Num
+			}
+		}
 		return true
 	case OT_DeleteShards:
 		deleteShardsArgs := op.Args.(DeleteShardsArgs)
@@ -342,7 +348,7 @@ func (kv *ShardKV) applyOp(op Op) bool {
 			}
 		}
 
-		DPrintf("[SKV-S][%v][%v] deleteConfigNum: %v, deletedShards: %+v, shardLastNums: %+v", kv.gid, kv.me, deleteShardsArgs.ConfigNum, deletedShards, kv.shardLastNums)
+		DPrintf("[SKV-S][%v][%v] configNum: %v, deleteConfigNum: %v, deletedShards: %+v, shardLastNums: %+v", kv.gid, kv.me, kv.config.Num, deleteShardsArgs.ConfigNum, deletedShards, kv.shardLastNums)
 
 		for key, value := range kv.mp {
 			if deletedShards[key2shard(key)] {
@@ -451,9 +457,9 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 
 	kv.mu.Lock()
 	moveArgs := ApplyMovementArgs{
-		Num:      newConfig.Num,
 		Mp:       movedMap,
 		Sessions: movedSession,
+		Config:   newConfig,
 		Id:       kv.uid,
 		ReqNum:   kv.localReqNum,
 	}
