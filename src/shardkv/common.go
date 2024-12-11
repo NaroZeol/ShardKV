@@ -24,12 +24,13 @@ const (
 )
 
 const (
-	OT_GET           = "Get"
-	OT_PUT           = "Put"
-	OT_APPEND        = "Append"
-	OT_ApplyMovement = "ApplyMovement"
-	OT_ChangeConfig  = "ChangeConfig"
-	OT_DeleteShards  = "DeleteShards"
+	OT_GET            = "Get"
+	OT_PUT            = "Put"
+	OT_APPEND         = "Append"
+	OT_ApplyMovement  = "ApplyMovement"
+	OT_ChangeConfig   = "ChangeConfig"
+	OT_DeleteShards   = "DeleteShards"
+	OT_UpdateShardVec = "UpdateShardVec"
 )
 
 type Err string
@@ -71,6 +72,18 @@ type ApplyMovementArgs struct {
 }
 
 type ApplyMovementReply struct {
+	Err Err
+}
+
+type UpdateShardVecArgs struct {
+	Id     int64
+	ReqNum int64
+
+	ConfigNum int
+	NewVec    [shardctrler.NShards]bool
+}
+
+type UpdateShardVecReply struct {
 	Err Err
 }
 
@@ -185,6 +198,19 @@ func (args ChangeConfigArgs) getKey() string {
 	return ""
 }
 
+func (args UpdateShardVecArgs) getId() int64 {
+	return args.Id
+}
+
+func (args UpdateShardVecArgs) getReqNum() int64 {
+	return args.ReqNum
+}
+
+// only define for satisfying interface
+func (args UpdateShardVecArgs) getKey() string {
+	return ""
+}
+
 func (reply *GetReply) setErr(err Err) {
 	reply.Err = err
 }
@@ -202,5 +228,9 @@ func (reply *ChangeConfigReply) setErr(err Err) {
 }
 
 func (reply *DeleteShardsReply) setErr(err Err) {
+	reply.Err = err
+}
+
+func (reply *UpdateShardVecReply) setErr(err Err) {
 	reply.Err = err
 }
