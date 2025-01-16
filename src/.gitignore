@@ -1,7 +1,0 @@
-*.*/
-*.so
-
-cmd/ctrler/ctrler
-cmd/server/server
-*.dat
-*.log

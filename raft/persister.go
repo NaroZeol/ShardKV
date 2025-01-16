@@ -29,8 +29,13 @@ func MakePersister() *Persister {
 	ps := Persister{}
 	ps.mid = rand.Int()
 
-	ps.rsfp, _ = os.OpenFile("raftstate/raftstate-"+strconv.Itoa(ps.mid)+".dat", os.O_CREATE|os.O_RDWR, 0666)
-	ps.snapfp, _ = os.OpenFile("snapshot/snapshot-"+strconv.Itoa(ps.mid)+".dat", os.O_CREATE|os.O_RDWR, 0666)
+	var err1, err2 error
+	ps.rsfp, err1 = os.OpenFile("raftstate/raftstate-"+strconv.Itoa(ps.mid)+".dat", os.O_CREATE|os.O_RDWR, 0666)
+	ps.snapfp, err2 = os.OpenFile("snapshot/snapshot-"+strconv.Itoa(ps.mid)+".dat", os.O_CREATE|os.O_RDWR, 0666)
+
+	if err1 != nil || err2 != nil {
+		panic("Error opening files")
+	}
 
 	return &ps
 }
@@ -39,8 +44,13 @@ func MakePersisterWithId(id int) *Persister {
 	ps := Persister{}
 	ps.mid = id
 
-	ps.rsfp, _ = os.OpenFile("raftstate/raftstate-"+strconv.Itoa(ps.mid)+".dat", os.O_CREATE|os.O_RDWR, 0666)
-	ps.snapfp, _ = os.OpenFile("snapshot/snapshot-"+strconv.Itoa(ps.mid)+".dat", os.O_CREATE|os.O_RDWR, 0666)
+	var err1, err2 error
+	ps.rsfp, err1 = os.OpenFile("raftstate/raftstate-"+strconv.Itoa(ps.mid)+".dat", os.O_CREATE|os.O_RDWR, 0666)
+	ps.snapfp, err2 = os.OpenFile("snapshot/snapshot-"+strconv.Itoa(ps.mid)+".dat", os.O_CREATE|os.O_RDWR, 0666)
+
+	if err1 != nil || err2 != nil {
+		panic("Error opening files")
+	}
 
 	return &ps
 }

@@ -28,7 +28,7 @@ type Config struct {
 	Ctrlers []ServerInfo `json:"ctrlers"`
 }
 
-func LoadConfig(gid int, path string) Config {
+func LoadConfig(path string) Config {
 	config := Config{}
 
 	file, err := os.Open(path)
@@ -48,14 +48,13 @@ func LoadConfig(gid int, path string) Config {
 
 func main() {
 	var id int
-	var gid int
 	var configPath string
 	flag.IntVar(&id, "i", -1, "Server ID")
 	flag.StringVar(&configPath, "c", "", "Config file path")
 	flag.Parse()
 
 	// Load configuration
-	config := LoadConfig(gid, configPath)
+	config := LoadConfig(configPath)
 
 	// start RPC server
 	rpc.HandleHTTP()

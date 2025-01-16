@@ -1,0 +1,12 @@
+*.*/
+*.so
+
+bin/
+
+src/cmd/ctrler/server/ctrler-server
+src/cmd/ctrler/client/ctrler-client
+src/cmd/shardkv/server/shardkv-server
+src/cmd/shardkv/client/shardkv-client
+
+*.dat
+*.log
