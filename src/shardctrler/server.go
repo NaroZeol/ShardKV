@@ -3,6 +3,7 @@ package shardctrler
 import (
 	"bytes"
 	"log"
+	"net/rpc"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -72,20 +73,24 @@ type Snapshot struct {
 	Maker      int // for debug
 }
 
-func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
+func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) error {
 	sc.handleNomalRPC(args, reply, OT_Join)
+	return nil
 }
 
-func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
+func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) error {
 	sc.handleNomalRPC(args, reply, OT_Leave)
+	return nil
 }
 
-func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
+func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) error {
 	sc.handleNomalRPC(args, reply, OT_Move)
+	return nil
 }
 
-func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
+func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) error {
 	sc.handleNomalRPC(args, reply, OT_Query)
+	return nil
 }
 
 func (sc *ShardCtrler) handleNomalRPC(args GenericArgs, reply GenericReply, opType string) {
@@ -491,6 +496,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 
 	sc.applyCh = make(chan raft.ApplyMsg)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
+	rpc.Register(sc.rf)
 
 	sc.configs = make([]Config, 1)
 	sc.configs[0].Groups = map[int][]string{}

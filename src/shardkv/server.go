@@ -81,33 +81,36 @@ type Snapshot struct {
 	Maker         int // for debug
 }
 
-func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
+func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) error {
 	kv.handleNormalRPC(args, reply, OT_GET)
+	return nil
 }
 
-func (kv *ShardKV) Put(args *PutAppendArgs, reply *PutAppendReply) {
+func (kv *ShardKV) Put(args *PutAppendArgs, reply *PutAppendReply) error {
 	kv.handleNormalRPC(args, reply, OT_PUT)
+	return nil
 }
 
-func (kv *ShardKV) Append(args *PutAppendArgs, reply *PutAppendReply) {
+func (kv *ShardKV) Append(args *PutAppendArgs, reply *PutAppendReply) error {
 	kv.handleNormalRPC(args, reply, OT_APPEND)
+	return nil
 }
 
-func (kv *ShardKV) RequestMapAndSession(args *RequestMapAndSessionArgs, reply *RequestMapAndSessionReply) {
+func (kv *ShardKV) RequestMapAndSession(args *RequestMapAndSessionArgs, reply *RequestMapAndSessionReply) error {
 	DPrintf("[SKV-S][%v][%v] receive RPC RequestMapAndSession from [%v][%v]", kv.gid, kv.me, args.Gid, args.Me)
 	replyMp := make(map[string]string)
 	replySession := make(map[string]Session, 0)
 
 	if _, isLeader := kv.rf.GetState(); !isLeader {
 		reply.Err = ERR_WrongLeader
-		return
+		return nil
 	}
 
 	kv.mu.Lock()
 	if kv.config.Num < args.ConfigNum {
 		reply.Err = ERR_LowerConfigNum
 		kv.mu.Unlock()
-		return
+		return nil
 	}
 
 	for key, value := range kv.mp {
@@ -126,13 +129,16 @@ func (kv *ShardKV) RequestMapAndSession(args *RequestMapAndSessionArgs, reply *R
 	reply.Err = OK
 	reply.Mp = replyMp
 	reply.Sessions = replySession
+
+	return nil
 }
 
-func (kv *ShardKV) DeleteShards(args *DeleteShardsArgs, reply *DeleteShardsReply) {
+func (kv *ShardKV) DeleteShards(args *DeleteShardsArgs, reply *DeleteShardsReply) error {
 	kv.handleNormalRPC(args, reply, OT_DeleteShards)
+	return nil
 }
 
-func (kv *ShardKV) ApplyMovement(args *ApplyMovementArgs, reply *ApplyMovementReply) {
+func (kv *ShardKV) ApplyMovement(args *ApplyMovementArgs, reply *ApplyMovementReply) error {
 	DPrintf("[SKV-S][%v][%v] Start RPC $%v ApplyMovement(%+v) ", kv.gid, kv.me, args.ReqNum, *args)
 	for !kv.killed() {
 		kv.handleNormalRPC(args, reply, OT_ApplyMovement)
@@ -146,6 +152,7 @@ func (kv *ShardKV) ApplyMovement(args *ApplyMovementArgs, reply *ApplyMovementRe
 			continue
 		}
 	}
+	return nil
 }
 
 func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType string) {

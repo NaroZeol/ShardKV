@@ -314,7 +314,7 @@ type InstallSnapshotReply struct {
 	Term int
 }
 
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) error {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -329,7 +329,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if args.Term < rf.currentTerm {
 		DPrintf("[%v] refuse to vote for [%v] in term %v because of more up-to-date entry %v\n", rf.me, args.CandiateId, args.Term, rf.currentTerm)
-		return
+		return nil
 	} else if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = nil
@@ -354,13 +354,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
 		DPrintf("[%v] vote for [%v] in term %v\n", rf.me, args.CandiateId, args.Term)
-		return
+		return nil
 	} else {
 		log.Fatalf("[%v] reach unreachable in Raft.RequestVote\n", rf.me)
 	}
+	return nil
 }
 
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) error {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -391,7 +392,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		DPrintf("[%v] refuce to accept AppendEntries from [%v] in term %v because of higher term %v", rf.me, args.LeaderId, args.Term, rf.currentTerm)
-		return
+		return nil
 	}
 
 	updateCommitIndex := func() {
@@ -423,7 +424,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if len(args.Entries) != 0 { // ignore printing heart beat message
 			DPrintf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
 		}
-		return
+		return nil
 	}
 
 	// fix package from leader
@@ -442,7 +443,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if i == len(args.Entries) {
 			DPrintf("[%v] refuse to use fix package because it's prefix entries", rf.me)
 			DPrintf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
-			return
+			return nil
 		}
 
 		rf.log = append(rf.log[:rf.localIndex(rf.lastApplied+1)], args.Entries...) // left-closed and right-open interval for slice
@@ -454,7 +455,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		DPrintf("[%v] receive a fix package from [%v]", rf.me, args.LeaderId)
 		DPrintf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
-		return
+		return nil
 	}
 
 	// Bad case
@@ -464,16 +465,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			DPrintf("[%v] reject to append entries from #%v to #%v with different index #%v or term %v", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries), prevLogIndex, prevLogTerm)
 			DPrintf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
 		}
-		return
+		return nil
 	}
 
 	// unreachable, for debug
 	DPrintf("args: %+v", *args)
 	DPrintf("prevLogIndex: %+v, prevLogTerm: %+v, lastApplied: %+v", prevLogIndex, prevLogTerm, lastApplied)
 	log.Fatalf("[%v] reach unreachable in Raft.AppendEntries", rf.me)
+	return nil
 }
 
-func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) error {
 	rf.mu.Lock()
 	DPrintf("[%v] receive InstallSnapshot from [%v]", rf.me, args.LeaderId)
 
@@ -483,17 +485,17 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	if args.Term < rf.currentTerm {
 		DPrintf("[%v] refuse to install snapshot because of higher term", rf.me)
 		rf.mu.Unlock()
-		return
+		return nil
 	}
 	if args.LastIncludedIndex < rf.snapshotIndex {
 		DPrintf("[%v] refuse to install snapshot because of more up-to-date snapshot", rf.me)
 		rf.mu.Unlock()
-		return
+		return nil
 	}
 	if args.LastIncludedIndex == rf.snapshotIndex {
 		DPrintf("[%v] refuce to install snapshot because of same up-to-date snapshot", rf.me)
 		rf.mu.Unlock()
-		return
+		return nil
 	}
 
 	// Figure 13 step 6
@@ -540,6 +542,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.mu.Unlock()
 
 	DPrintf("[%v] install snapshot up to #%v (external index #%v) successfully!", rf.me, args.LastIncludedInternal, args.LastIncludedIndex)
+	return nil
 }
 
 // example code to send a RequestVote RPC to a server.
