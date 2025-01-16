@@ -1,0 +1,83 @@
+{
+    "nserver": 3,
+    "groups": [
+        {
+            "gid": 0,
+            "servers": [
+                {
+                    "id": 0,
+                    "host": "localhost",
+                    "port": 5000
+                },
+                {
+                    "id": 1,
+                    "host": "localhost",
+                    "port": 5001
+                },
+                {
+                    "id": 2,
+                    "host": "localhost",
+                    "port": 5002
+                }
+            ]
+        },
+        {
+            "gid": 1,
+            "servers": [
+                {
+                    "id": 3,
+                    "host": "localhost",
+                    "port": 5003
+                },
+                {
+                    "id": 4,
+                    "host": "localhost",
+                    "port": 5004
+                },
+                {
+                    "id": 5,
+                    "host": "localhost",
+                    "port": 5005
+                }
+            ]
+        },
+        {
+            "gid": 2,
+            "servers": [
+                {
+                    "id": 6,
+                    "host": "localhost",
+                    "port": 5006
+                },
+                {
+                    "id": 7,
+                    "host": "localhost",
+                    "port": 5007
+                },
+                {
+                    "id": 8,
+                    "host": "localhost",
+                    "port": 5008
+                }
+            ]
+        }
+    ],
+    "nctrler": 3,
+    "ctrlers": [
+        {
+            "id": 0,
+            "host": "localhost",
+            "port": 6000
+        },
+        {
+            "id": 1,
+            "host": "localhost",
+            "port": 6001
+        },
+        {
+            "id": 2,
+            "host": "localhost",
+            "port": 6002
+        }
+    ]
+}
