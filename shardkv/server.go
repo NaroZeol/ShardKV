@@ -3,6 +3,7 @@ package shardkv
 import (
 	"bytes"
 	"log"
+	"net/rpc"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -821,6 +822,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.persister = persister
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	rpc.Register(kv.rf)
 
 	kv.mp = make(map[string]string)
 	kv.confirmMap = make(map[int]bool)
