@@ -9,7 +9,6 @@ import (
 	"net/rpc"
 
 	"6.5840/cmd/common"
-	"6.5840/labrpc"
 	"6.5840/raft"
 	"6.5840/shardkv"
 )
@@ -52,10 +51,7 @@ func main() {
 	maxRaftState := 2048
 
 	// start server
-	sv := shardkv.StartServer(servers, id, persister, maxRaftState, gid, ctrlers,
-		func(addr string) *labrpc.ClientEnd {
-			return &labrpc.ClientEnd{} // TODO: implement
-		})
+	sv := shardkv.StartServer(servers, id, persister, maxRaftState, gid, ctrlers, common.MakeEnd)
 	rpc.Register(sv)
 
 	// wait forever
