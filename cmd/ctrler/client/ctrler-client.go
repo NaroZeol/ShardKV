@@ -2,49 +2,19 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
-	"net/rpc"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
-	"6.5840/labrpc"
+	"6.5840/cmd/common"
 	"6.5840/shardctrler"
 )
 
-type ServerInfo struct {
-	Id   int    `json:"id"`
-	Host string `json:"host"`
-	Port int    `json:"port"`
-}
-
-type Config struct {
-	NCtrler int          `json:"nctrler"`
-	Ctrlers []ServerInfo `json:"ctrlers"`
-}
-
-func LoadConfig(path string) Config {
-	config := Config{}
-
-	file, err := os.Open(path)
-	if err != nil {
-		log.Fatal("Error opening config file:", err)
-	}
-
-	decoder := json.NewDecoder(file)
-	err = decoder.Decode(&config)
-	if err != nil {
-		log.Fatal("Error decoding config file:", err)
-	}
-	file.Close()
-
-	return config
-}
+type Config = common.Config
+type ServerInfo = common.ServerInfo
 
 func ReadJoinInfo() map[int][]string {
 	servers := make(map[int][]string)
@@ -114,29 +84,10 @@ func main() {
 	flag.Parse()
 
 	// Load configuration
-	config := LoadConfig(configPath)
+	config := common.LoadConfig(configPath)
 
 	// connect to shardctrler
-	ctrlers := make([]*labrpc.ClientEnd, config.NCtrler)
-	wg := sync.WaitGroup{}
-	for i := 0; i < config.NCtrler; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			for {
-				client, err := rpc.DialHTTP("tcp", fmt.Sprintf("%s:%d", config.Ctrlers[i].Host, config.Ctrlers[i].Port))
-				if err != nil {
-					log.Printf("Failed to connect to controller %d\n", i)
-					time.Sleep(1 * time.Second)
-				} else {
-					ctrlers[i] = labrpc.MakeClient(client, config.Ctrlers[i].Host, config.Ctrlers[i].Port)
-					log.Printf("Connected to controller %d\n", i)
-					break
-				}
-			}
-		}(i)
-	}
-	wg.Wait()
+	ctrlers := common.ConnectToServers(config.Ctrlers, map[int]bool{})
 	log.Println("Connected to all controllers")
 
 	ck := shardctrler.MakeClerk(ctrlers)
