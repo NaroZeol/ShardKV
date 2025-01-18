@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 
 	"6.5840/cmd/common"
 	"6.5840/shardkv"
@@ -12,6 +15,24 @@ import (
 type Config = common.Config
 type ServerInfo = common.ServerInfo
 type GroupInfo = common.GroupInfo
+
+func handleInput() (action, key, value string) {
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+
+	line := strings.TrimSpace(scanner.Text())
+	parts := strings.Fields(line)
+
+	if len(parts) == 1 {
+		return parts[0], "", ""
+	} else if len(parts) == 2 {
+		return parts[0], parts[1], ""
+	} else if len(parts) == 3 {
+		return parts[0], parts[1], parts[2]
+	}
+
+	return "", "", ""
+}
 
 func main() {
 	var configPath string
@@ -29,23 +50,16 @@ func main() {
 
 	// server loop
 	for {
-		var cmd string
 		fmt.Print("> ")
-		fmt.Scanln(&cmd)
+		cmd, key, value := handleInput()
 
 		switch cmd {
 		case "put":
-			var key, value string
-			fmt.Scanln(&key, &value)
 			ck.Put(key, value)
 		case "get":
-			var key string
-			fmt.Scanln(&key)
 			value := ck.Get(key)
 			fmt.Println(value)
 		case "append":
-			var key, value string
-			fmt.Scanln(&key, &value)
 			ck.Append(key, value)
 		case "help":
 			fmt.Println("Commands: put, get, append, help")
