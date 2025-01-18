@@ -47,7 +47,7 @@ func main() {
 	log.Println("All controllers connected")
 
 	// create persister
-	persister := raft.MakePersister()
+	persister := raft.MakePersister(gid, id)
 	maxRaftState := 2048
 
 	// start server

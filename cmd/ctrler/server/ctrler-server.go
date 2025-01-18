@@ -40,7 +40,7 @@ func main() {
 	log.Println("All controller connected")
 
 	// make persister
-	persister := raft.MakePersister()
+	persister := raft.MakePersister(-1, id) // -1 to shardctrler
 
 	// start shardctrler
 	ctrler := shardctrler.StartServer(servers, id, persister)

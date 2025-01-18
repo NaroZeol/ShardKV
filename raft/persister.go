@@ -12,60 +12,33 @@ package raft
 import (
 	"bytes"
 	"encoding/binary"
-	"math/rand"
+	"fmt"
 	"os"
-	"strconv"
 	"sync"
 )
 
 type Persister struct {
 	mu     sync.Mutex
-	mid    int // machine ID
+	gid    int
+	id     int
 	rsfp   *os.File
 	snapfp *os.File
 }
 
-func MakePersister() *Persister {
+func MakePersister(gid int, id int) *Persister {
 	ps := Persister{}
-	ps.mid = rand.Int()
+	ps.gid = gid
+	ps.id = id
 
 	var err1, err2 error
-	ps.rsfp, err1 = os.OpenFile("raftstate/raftstate-"+strconv.Itoa(ps.mid)+".dat", os.O_CREATE|os.O_RDWR, 0666)
-	ps.snapfp, err2 = os.OpenFile("snapshot/snapshot-"+strconv.Itoa(ps.mid)+".dat", os.O_CREATE|os.O_RDWR, 0666)
+	ps.rsfp, err1 = os.OpenFile(fmt.Sprintf("raftstate/raftstate-%d-%d.dat", ps.gid, ps.id), os.O_CREATE|os.O_RDWR, 0666)
+	ps.snapfp, err2 = os.OpenFile(fmt.Sprintf("snapshot/snapshot-%d-%d.dat", ps.gid, ps.id), os.O_CREATE|os.O_RDWR, 0666)
 
 	if err1 != nil || err2 != nil {
 		panic("Error opening files")
 	}
 
 	return &ps
-}
-
-func MakePersisterWithId(id int) *Persister {
-	ps := Persister{}
-	ps.mid = id
-
-	var err1, err2 error
-	ps.rsfp, err1 = os.OpenFile("raftstate/raftstate-"+strconv.Itoa(ps.mid)+".dat", os.O_CREATE|os.O_RDWR, 0666)
-	ps.snapfp, err2 = os.OpenFile("snapshot/snapshot-"+strconv.Itoa(ps.mid)+".dat", os.O_CREATE|os.O_RDWR, 0666)
-
-	if err1 != nil || err2 != nil {
-		panic("Error opening files")
-	}
-
-	return &ps
-}
-
-// func clone(orig []byte) []byte {
-// 	x := make([]byte, len(orig))
-// 	copy(x, orig)
-// 	return x
-// }
-
-func (ps *Persister) Copy() *Persister {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	np := MakePersisterWithId(ps.mid)
-	return np
 }
 
 func (ps *Persister) ReadRaftState() []byte {
