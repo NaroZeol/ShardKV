@@ -51,15 +51,16 @@ type Clerk struct {
 // make_end(servername) turns a server name from a
 // Config.Groups[gid][i] into a labrpc.ClientEnd on which you can
 // send RPCs.
-func MakeClerk(ctrlers []*rpcwrapper.ClientEnd, make_end func(string) (*rpcwrapper.ClientEnd, error)) *Clerk {
+func MakeClerk(ctrlers []*rpcwrapper.ClientEnd, verbose bool, make_end func(string) (*rpcwrapper.ClientEnd, error)) *Clerk {
 	ck := new(Clerk)
-	ck.sm = shardctrler.MakeClerk(ctrlers)
+	ck.sm = shardctrler.MakeClerk(ctrlers, verbose)
 	ck.make_end = make_end
 
 	ck.id = nrand()
 	ck.reqNum = 1
 
 	ck.groupLeader = make(map[int]int)
+	Debug = verbose
 
 	return ck
 }

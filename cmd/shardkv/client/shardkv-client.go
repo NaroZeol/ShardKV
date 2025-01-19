@@ -36,8 +36,10 @@ func handleInput() (action, key, value string) {
 func main() {
 	var configPath string
 	var interactive bool
+	var verbose bool
 	flag.StringVar(&configPath, "c", "", "Config file path")
 	flag.BoolVar(&interactive, "i", false, "Interactive mode")
+	flag.BoolVar(&verbose, "v", false, "Verbose mode")
 	flag.Parse()
 
 	// Load configuration
@@ -46,7 +48,7 @@ func main() {
 	// connect to shardctrler
 	ctrlers := common.MakeClientEnds(config.Ctrlers)
 
-	ck := shardkv.MakeClerk(ctrlers, common.MakeEnd)
+	ck := shardkv.MakeClerk(ctrlers, verbose, common.MakeEnd)
 
 	// server loop
 	for {

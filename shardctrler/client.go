@@ -29,12 +29,14 @@ func nrand() int64 {
 	return x
 }
 
-func MakeClerk(servers []*rpcwrapper.ClientEnd) *Clerk {
+func MakeClerk(servers []*rpcwrapper.ClientEnd, verbose bool) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	ck.id = nrand()
 	ck.reqNum = 1
 	ck.leader = 0
+
+	Debug = verbose
 
 	return ck
 }

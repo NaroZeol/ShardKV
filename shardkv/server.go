@@ -15,7 +15,7 @@ import (
 	"6.5840/shardctrler"
 )
 
-const Debug = true
+var Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -845,7 +845,7 @@ func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persis
 	kv.uid = -nrand() // use negtive value
 	DPrintf("[SKV-S][%v][%v] Start With UID %v", kv.gid, kv.me, kv.uid)
 
-	kv.mck = shardctrler.MakeClerk(kv.ctrlers)
+	kv.mck = shardctrler.MakeClerk(kv.ctrlers, Debug)
 
 	go kv.handleApplyMsg()
 	go kv.pollConfig()

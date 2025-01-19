@@ -14,7 +14,7 @@ import (
 	"6.5840/rpcwrapper"
 )
 
-const Debug = false
+var Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
