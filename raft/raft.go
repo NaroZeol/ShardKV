@@ -26,7 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"6.5840/labrpc"
+	"6.5840/rpcwrapper"
 )
 
 // as each Raft peer becomes aware that successive log entries are
@@ -59,11 +59,11 @@ type logEntry struct {
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
-	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	persister *Persister          // Object to hold this peer's persisted state
-	me        int                 // this peer's index into peers[]
-	dead      int32               // set by Kill()
+	mu        sync.Mutex              // Lock to protect shared access to this peer's state
+	peers     []*rpcwrapper.ClientEnd // RPC end points of all peers
+	persister *Persister              // Object to hold this peer's persisted state
+	me        int                     // this peer's index into peers[]
+	dead      int32                   // set by Kill()
 
 	// Persistent state on all servers
 	state       raftState
@@ -1089,7 +1089,7 @@ func (rf *Raft) serveAsLeader(term int) {
 // tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
-func Make(peers []*labrpc.ClientEnd, me int,
+func Make(peers []*rpcwrapper.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers

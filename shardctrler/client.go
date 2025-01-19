@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"6.5840/labrpc"
+	"6.5840/rpcwrapper"
 )
 
 type Clerk struct {
 	mu      sync.Mutex
-	servers []*labrpc.ClientEnd
+	servers []*rpcwrapper.ClientEnd
 	id      int64
 	reqNum  int64
 
@@ -29,7 +29,7 @@ func nrand() int64 {
 	return x
 }
 
-func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
+func MakeClerk(servers []*rpcwrapper.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	ck.id = nrand()

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"6.5840/labrpc"
+	"6.5840/rpcwrapper"
 )
 
 func LoadConfig(path string) Config {
@@ -28,15 +28,15 @@ func LoadConfig(path string) Config {
 	return config
 }
 
-func MakeClientEnds(servers []ServerInfo) []*labrpc.ClientEnd {
-	clientEnds := make([]*labrpc.ClientEnd, len(servers))
+func MakeClientEnds(servers []ServerInfo) []*rpcwrapper.ClientEnd {
+	clientEnds := make([]*rpcwrapper.ClientEnd, len(servers))
 	for i, server := range servers {
-		clientEnds[i] = labrpc.MakeClient(server.Host, server.Port)
+		clientEnds[i] = rpcwrapper.MakeClient(server.Host, server.Port)
 	}
 	return clientEnds
 }
 
-func MakeEnd(name string) (clientend *labrpc.ClientEnd, err error) {
+func MakeEnd(name string) (clientend *rpcwrapper.ClientEnd, err error) {
 	fileds := strings.Split(name, ":")
 
 	host := fileds[0]
@@ -45,5 +45,5 @@ func MakeEnd(name string) (clientend *labrpc.ClientEnd, err error) {
 		log.Println("Wrong format, port should be an integer")
 	}
 
-	return labrpc.MakeClient(host, port), nil
+	return rpcwrapper.MakeClient(host, port), nil
 }

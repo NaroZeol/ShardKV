@@ -8,7 +8,7 @@ package shardkv
 // talks to the group that holds the key's shard.
 //
 
-import "6.5840/labrpc"
+import "6.5840/rpcwrapper"
 import "crypto/rand"
 import "math/big"
 import "6.5840/shardctrler"
@@ -36,7 +36,7 @@ func nrand() int64 {
 type Clerk struct {
 	sm       *shardctrler.Clerk
 	config   shardctrler.Config
-	make_end func(string) (*labrpc.ClientEnd, error)
+	make_end func(string) (*rpcwrapper.ClientEnd, error)
 
 	id     int64
 	reqNum int64
@@ -51,7 +51,7 @@ type Clerk struct {
 // make_end(servername) turns a server name from a
 // Config.Groups[gid][i] into a labrpc.ClientEnd on which you can
 // send RPCs.
-func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) (*labrpc.ClientEnd, error)) *Clerk {
+func MakeClerk(ctrlers []*rpcwrapper.ClientEnd, make_end func(string) (*rpcwrapper.ClientEnd, error)) *Clerk {
 	ck := new(Clerk)
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.make_end = make_end

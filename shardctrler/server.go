@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"6.5840/labrpc"
 	"6.5840/raft"
+	"6.5840/rpcwrapper"
 )
 
 const Debug = false
@@ -482,7 +482,7 @@ func (sc *ShardCtrler) Raft() *raft.Raft {
 // servers that will cooperate via Raft to
 // form the fault-tolerant shardctrler service.
 // me is the index of the current server in servers[].
-func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister) *ShardCtrler {
+func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persister) *ShardCtrler {
 	gob.Register(Op{})
 	gob.Register(JoinArgs{})
 	gob.Register(LeaveArgs{})

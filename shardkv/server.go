@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"6.5840/labrpc"
 	"6.5840/raft"
+	"6.5840/rpcwrapper"
 	"6.5840/shardctrler"
 )
 
@@ -48,9 +48,9 @@ type ShardKV struct {
 	me       int
 	rf       *raft.Raft
 	applyCh  chan raft.ApplyMsg
-	make_end func(string) (*labrpc.ClientEnd, error)
+	make_end func(string) (*rpcwrapper.ClientEnd, error)
 	gid      int
-	ctrlers  []*labrpc.ClientEnd
+	ctrlers  []*rpcwrapper.ClientEnd
 	mck      *shardctrler.Clerk
 	config   shardctrler.Config
 
@@ -810,7 +810,7 @@ func (kv *ShardKV) killed() bool {
 //
 // StartServer() must return quickly, so it should start goroutines
 // for any long-running work.
-func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, ctrlers []*labrpc.ClientEnd, make_end func(string) (*labrpc.ClientEnd, error)) *ShardKV {
+func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, ctrlers []*rpcwrapper.ClientEnd, make_end func(string) (*rpcwrapper.ClientEnd, error)) *ShardKV {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	gob.Register(Op{})

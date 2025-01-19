@@ -1,4 +1,4 @@
-package labrpc
+package rpcwrapper
 
 import (
 	"fmt"
