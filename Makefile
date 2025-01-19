@@ -33,6 +33,9 @@ $(SHARDKV_SERVER_BIN): $(SHARDKV_SERVER_SRC)
 	mkdir -p $(dir $@)
 	$(GO) build -o $@ $<
 
+tmux:
+	./tmux-test.sh
+
 clean:
 	@echo "Cleaning up..."
 	rm -rf $(CTRLER_CLIENT_BIN)
