@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -87,8 +86,7 @@ func main() {
 	config := common.LoadConfig(configPath)
 
 	// connect to shardctrler
-	ctrlers := common.ConnectToServers(config.Ctrlers, map[int]bool{})
-	log.Println("Connected to all controllers")
+	ctrlers := common.MakeClientEnds(config.Ctrlers)
 
 	ck := shardctrler.MakeClerk(ctrlers)
 

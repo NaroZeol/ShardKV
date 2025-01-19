@@ -38,13 +38,11 @@ func main() {
 	log.Printf("Server %d listening on port %d\n", id, config.Groups[gid].Servers[id].Port)
 	go http.Serve(listener, nil)
 
-	// connect to other servers
-	servers := common.ConnectToServers(config.Groups[gid].Servers, map[int]bool{id: true})
-	log.Println("All servers connected")
+	// servers
+	servers := common.MakeClientEnds(config.Groups[gid].Servers)
 
-	// connect to controllers
-	ctrlers := common.ConnectToServers(config.Ctrlers, map[int]bool{})
-	log.Println("All controllers connected")
+	// controllers
+	ctrlers := common.MakeClientEnds(config.Ctrlers)
 
 	// create persister
 	persister := raft.MakePersister(gid, id)

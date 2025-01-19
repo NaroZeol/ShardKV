@@ -36,8 +36,7 @@ func main() {
 	go http.Serve(listener, nil)
 
 	// connect to other controllers
-	servers := common.ConnectToServers(config.Ctrlers, map[int]bool{id: true})
-	log.Println("All controller connected")
+	servers := common.MakeClientEnds(config.Ctrlers)
 
 	// make persister
 	persister := raft.MakePersister(-1, id) // -1 to shardctrler

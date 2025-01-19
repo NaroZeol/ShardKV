@@ -2,12 +2,10 @@ package common
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
-	"net/rpc"
 	"os"
-	"sync"
-	"time"
+	"strconv"
+	"strings"
 
 	"6.5840/labrpc"
 )
@@ -30,44 +28,22 @@ func LoadConfig(path string) Config {
 	return config
 }
 
-func ConnectToServers(servers []ServerInfo, excluded map[int]bool) []*labrpc.ClientEnd {
-	clientends := make([]*labrpc.ClientEnd, len(servers))
-
-	wg := sync.WaitGroup{}
-	for i := 0; i < len(servers); i++ {
-		if excluded[i] {
-			continue
-		}
-
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			for {
-				client, err := rpc.DialHTTP("tcp", fmt.Sprintf("%s:%d", servers[i].Host, servers[i].Port))
-				if err != nil {
-					log.Printf("Failed to connect to %s:%d\n", servers[i].Host, servers[i].Port)
-					time.Sleep(1 * time.Second)
-				} else {
-					clientends[i] = labrpc.MakeClient(client, servers[i].Host, servers[i].Port)
-					log.Printf("Connected to %s:%d\n", servers[i].Host, servers[i].Port)
-					break
-				}
-			}
-		}(i)
+func MakeClientEnds(servers []ServerInfo) []*labrpc.ClientEnd {
+	clientEnds := make([]*labrpc.ClientEnd, len(servers))
+	for i, server := range servers {
+		clientEnds[i] = labrpc.MakeClient(server.Host, server.Port)
 	}
-	wg.Wait()
-
-	return clientends
+	return clientEnds
 }
 
 func MakeEnd(name string) (clientend *labrpc.ClientEnd, err error) {
-	var host string
-	var port int
-	fmt.Sscanf(name, "%s:%d", &host, &port)
+	fileds := strings.Split(name, ":")
 
-	client, err := rpc.DialHTTP("tcp", name)
+	host := fileds[0]
+	port, err := strconv.Atoi(fileds[1])
 	if err != nil {
-		return nil, err
+		log.Println("Wrong format, port should be an integer")
 	}
-	return labrpc.MakeClient(client, host, port), nil
+
+	return labrpc.MakeClient(host, port), nil
 }

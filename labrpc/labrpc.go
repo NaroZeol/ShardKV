@@ -2,7 +2,6 @@ package labrpc
 
 import (
 	"fmt"
-	// "log"
 	"net/rpc"
 	"time"
 )
@@ -13,14 +12,25 @@ type ClientEnd struct {
 	port int
 }
 
-func MakeClient(rc *rpc.Client, addr string, port int) *ClientEnd {
-	return &ClientEnd{rc, addr, port}
+func MakeClient(addr string, port int) *ClientEnd {
+	return &ClientEnd{nil, addr, port}
 }
 
 // send an RPC, wait for the reply.
 // the return value indicates success; false means that
 // no reply was received from the server.
 func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bool {
+	if e.rc == nil { // first time, connect to server, lazy initialization
+		c, err := rpc.DialHTTP("tcp", fmt.Sprintf("%s:%d", e.addr, e.port))
+		if err != nil {
+			// log.Println("Failed to connect to ", e.addr, ":", e.port)
+			// log.Println(err)
+			return false
+		}
+		// log.Println("Connected to ", e.addr, ":", e.port)
+		e.rc = c
+	}
+
 	done := make(chan error, 1)
 	go func() {
 		done <- e.rc.Call(svcMeth, args, reply)
