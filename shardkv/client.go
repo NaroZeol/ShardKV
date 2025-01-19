@@ -40,6 +40,8 @@ type Clerk struct {
 
 	id     int64
 	reqNum int64
+
+	groupLeader map[int]int
 }
 
 // the tester calls MakeClerk.
@@ -56,6 +58,8 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) (*labrpc.Clien
 
 	ck.id = nrand()
 	ck.reqNum = 1
+
+	ck.groupLeader = make(map[int]int)
 
 	return ck
 }
@@ -78,7 +82,10 @@ func (ck *Clerk) Get(key string) string {
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
 			// try each server for the shard.
-			for si := 0; si < len(servers); si++ {
+			startIndex := ck.groupLeader[gid] // start from the last leader
+			for i := range servers {
+				si := (startIndex + i) % len(servers)
+
 				srv, err := ck.make_end(servers[si])
 				if err != nil {
 					DPrintf("[SKV-C][%v] Failed to connect to Server [%v][%v]", ck.id, gid, si)
@@ -89,6 +96,8 @@ func (ck *Clerk) Get(key string) string {
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ERR_NoKey) {
 					DPrintf("[SKV-C][%v] $%v Get(%v) from Group %v sucessfully, shard %v, value: %v", ck.id, args.ReqNum, key, gid, key2shard(key), reply.Value)
+
+					ck.groupLeader[gid] = si // update leader
 					return reply.Value
 				}
 				if ok && (reply.Err == ERR_WrongGroup) {
@@ -131,7 +140,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
-			for si := 0; si < len(servers); si++ {
+			startIndex := ck.groupLeader[gid] // start from the last leader
+			for i := range servers {
+				si := (startIndex + i) % len(servers)
+
 				srv, err := ck.make_end(servers[si])
 				if err != nil {
 					DPrintf("[SKV-C][%v] Failed to connect to Server [%v][%v]", ck.id, gid, si)
@@ -141,6 +153,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				ok := srv.Call("ShardKV."+op, &args, &reply)
 				if ok && reply.Err == OK {
 					DPrintf("[SKV-C][%v] $%v %v(%v, %v) to group %v sucessfully, shard %v", ck.id, args.ReqNum, op, key, value, gid, key2shard(key))
+
+					ck.groupLeader[gid] = si // update leader
 					return
 				}
 				if ok && reply.Err == ERR_WrongGroup {
