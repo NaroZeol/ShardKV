@@ -1,7 +1,11 @@
 *.*/
 *.so
 
-bin/
+bin/ctrler
+bin/shardkv
+bin/raftstate
+bin/snapshot
+
 
 src/cmd/ctrler/server/ctrler-server
 src/cmd/ctrler/client/ctrler-client
