@@ -2,6 +2,7 @@ package shardctrler
 
 import (
 	"bytes"
+	"encoding/gob"
 	"log"
 	"net/rpc"
 	"sort"
@@ -9,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raft"
 )
@@ -434,7 +434,7 @@ func (sc *ShardCtrler) handleApplyMsg() {
 					Maker:      sc.me,
 				}
 				buffer := new(bytes.Buffer)
-				encoder := labgob.NewEncoder(buffer)
+				encoder := gob.NewEncoder(buffer)
 				encoder.Encode(newSnapshot)
 
 				sc.rf.Snapshot(applyMsg.CommandIndex, buffer.Bytes())
@@ -445,7 +445,7 @@ func (sc *ShardCtrler) handleApplyMsg() {
 			sc.mu.Lock()
 			DPrintf("[SC-S][%v] try to apply snapshot up to #%v", sc.me, applyMsg.SnapshotIndex)
 			buffer := bytes.NewBuffer(applyMsg.Snapshot)
-			decoder := labgob.NewDecoder(buffer)
+			decoder := gob.NewDecoder(buffer)
 			snapshot := Snapshot{}
 			decoder.Decode(&snapshot)
 
@@ -483,11 +483,11 @@ func (sc *ShardCtrler) Raft() *raft.Raft {
 // form the fault-tolerant shardctrler service.
 // me is the index of the current server in servers[].
 func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister) *ShardCtrler {
-	labgob.Register(Op{})
-	labgob.Register(JoinArgs{})
-	labgob.Register(LeaveArgs{})
-	labgob.Register(MoveArgs{})
-	labgob.Register(QueryArgs{})
+	gob.Register(Op{})
+	gob.Register(JoinArgs{})
+	gob.Register(LeaveArgs{})
+	gob.Register(MoveArgs{})
+	gob.Register(QueryArgs{})
 
 	sc := new(ShardCtrler)
 	sc.me = me

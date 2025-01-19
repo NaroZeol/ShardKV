@@ -2,6 +2,7 @@ package shardkv
 
 import (
 	"bytes"
+	"encoding/gob"
 	"log"
 	"net/rpc"
 	"strconv"
@@ -9,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raft"
 	"6.5840/shardctrler"
@@ -639,7 +639,7 @@ func (kv *ShardKV) handleApplyMsg() {
 					Maker:         kv.me,
 				}
 				buffer := new(bytes.Buffer)
-				encoder := labgob.NewEncoder(buffer)
+				encoder := gob.NewEncoder(buffer)
 				encoder.Encode(newSnapshot)
 
 				kv.rf.Snapshot(applyMsg.CommandIndex, buffer.Bytes())
@@ -650,7 +650,7 @@ func (kv *ShardKV) handleApplyMsg() {
 			kv.mu.Lock()
 			DPrintf("[SKV-S][%v][%v] try to apply snapshot up to #%v", kv.gid, kv.me, applyMsg.SnapshotIndex)
 			buffer := bytes.NewBuffer(applyMsg.Snapshot)
-			decoder := labgob.NewDecoder(buffer)
+			decoder := gob.NewDecoder(buffer)
 			snapshot := Snapshot{}
 			decoder.Decode(&snapshot)
 
@@ -813,13 +813,13 @@ func (kv *ShardKV) killed() bool {
 func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, ctrlers []*labrpc.ClientEnd, make_end func(string) (*labrpc.ClientEnd, error)) *ShardKV {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
-	labgob.Register(Op{})
-	labgob.Register(GetArgs{})
-	labgob.Register(PutAppendArgs{})
-	labgob.Register(ChangeConfigArgs{})
-	labgob.Register(ApplyMovementArgs{})
-	labgob.Register(DeleteShardsArgs{})
-	labgob.Register(UpdateShardVecArgs{})
+	gob.Register(Op{})
+	gob.Register(GetArgs{})
+	gob.Register(PutAppendArgs{})
+	gob.Register(ChangeConfigArgs{})
+	gob.Register(ApplyMovementArgs{})
+	gob.Register(DeleteShardsArgs{})
+	gob.Register(UpdateShardVecArgs{})
 
 	kv := new(ShardKV)
 	kv.me = me

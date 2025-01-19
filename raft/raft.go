@@ -19,13 +19,13 @@ package raft
 
 import (
 	"bytes"
+	"encoding/gob"
 	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"6.5840/labgob"
 	"6.5840/labrpc"
 )
 
@@ -171,7 +171,7 @@ func (rf *Raft) GetState() (int, bool) {
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
 	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
+	e := gob.NewEncoder(w)
 
 	e.Encode(rf.state)
 	e.Encode(rf.currentTerm)
@@ -197,7 +197,7 @@ func (rf *Raft) readPersist(data []byte) {
 	DPrintf("[%v] try to readPersist", rf.me)
 
 	r := bytes.NewBuffer(data)
-	d := labgob.NewDecoder(r)
+	d := gob.NewDecoder(r)
 
 	var _state raftState
 	var _currentTerm int
