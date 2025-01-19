@@ -31,6 +31,14 @@ func MakePersister(gid int, id int) *Persister {
 	ps.id = id
 
 	var err1, err2 error
+
+	err1 = os.MkdirAll("raftstate", 0777)
+	err2 = os.MkdirAll("snapshot", 0777)
+
+	if err1 != nil || err2 != nil {
+		panic("Error creating directories")
+	}
+
 	ps.rsfp, err1 = os.OpenFile(fmt.Sprintf("raftstate/raftstate-%d-%d.dat", ps.gid, ps.id), os.O_CREATE|os.O_RDWR, 0666)
 	ps.snapfp, err2 = os.OpenFile(fmt.Sprintf("snapshot/snapshot-%d-%d.dat", ps.gid, ps.id), os.O_CREATE|os.O_RDWR, 0666)
 
