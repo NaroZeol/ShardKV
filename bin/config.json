@@ -1,0 +1,96 @@
+{
+    "groups": [
+        {
+            "gid": 0,
+            "nserver": 5,
+            "servers": [
+                {
+                    "id": 0,
+                    "host": "localhost",
+                    "port": 5000
+                },
+                {
+                    "id": 1,
+                    "host": "localhost",
+                    "port": 5001
+                },
+                {
+                    "id": 2,
+                    "host": "localhost",
+                    "port": 5002
+                },
+                {
+                    "id": 3,
+                    "host": "localhost",
+                    "port": 5003
+
+                },
+                {
+                    "id": 4,
+                    "host": "localhost",
+                    "port": 5004
+                }
+            ]
+        },
+        {
+            "gid": 1,
+            "nserver": 3,
+            "servers": [
+                {
+                    "id": 0,
+                    "host": "localhost",
+                    "port": 5005
+                },
+                {
+                    "id": 1,
+                    "host": "localhost",
+                    "port": 5006
+                },
+                {
+                    "id": 2,
+                    "host": "localhost",
+                    "port": 5007
+                }
+            ]
+        },
+        {
+            "gid": 2,
+            "nserver": 3,
+            "servers": [
+                {
+                    "id": 0,
+                    "host": "localhost",
+                    "port": 5008
+                },
+                {
+                    "id": 1,
+                    "host": "localhost",
+                    "port": 5009
+                },
+                {
+                    "id": 2,
+                    "host": "localhost",
+                    "port": 5010
+                }
+            ]
+        }
+    ],
+    "nctrler": 3,
+    "ctrlers": [
+        {
+            "id": 0,
+            "host": "localhost",
+            "port": 6000
+        },
+        {
+            "id": 1,
+            "host": "localhost",
+            "port": 6001
+        },
+        {
+            "id": 2,
+            "host": "localhost",
+            "port": 6002
+        }
+    ]
+}
