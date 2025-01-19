@@ -14,30 +14,30 @@ SHARDKV_SERVER_SRC = cmd/shardkv/server/shardkv-server.go cmd/common/* shardkv/*
 all: $(CTRLER_CLIENT_BIN) $(CTRLER_SERVER_BIN) $(SHARDKV_CLIENT_BIN) $(SHARDKV_SERVER_BIN)
 
 $(CTRLER_CLIENT_BIN): $(CTRLER_CLIENT_SRC)
-	@echo "Building ctrler-client..."
-	mkdir -p $(dir $@)
+	@echo "\033[1;32mBuilding ctrler-client...\033[0m"
+	@mkdir -p $(dir $@)
 	$(GO) build -o $@ $<
 
 $(CTRLER_SERVER_BIN): $(CTRLER_SERVER_SRC)
-	@echo "Building ctrler-server..."
-	mkdir -p $(dir $@)
+	@echo "\033[1;32mBuilding ctrler-server...\033[0m"
+	@mkdir -p $(dir $@)
 	$(GO) build -o $@ $<
 
 $(SHARDKV_CLIENT_BIN): $(SHARDKV_CLIENT_SRC)
-	@echo "Building shardkv-client..."
-	mkdir -p $(dir $@)
+	@echo "\033[1;32mBuilding shardkv-client...\033[0m"
+	@mkdir -p $(dir $@)
 	$(GO) build -o $@ $<
 
 $(SHARDKV_SERVER_BIN): $(SHARDKV_SERVER_SRC)
-	@echo "Building shardkv-server..."
-	mkdir -p $(dir $@)
+	@echo "\033[1;32mBuilding shardkv-server...\033[0m"
+	@mkdir -p $(dir $@)
 	$(GO) build -o $@ $<
 
 tmux:
 	./tmux-test.sh
 
 clean:
-	@echo "Cleaning up..."
+	@echo "\033[1;32mCleaning up...\033[0m"
 	rm -rf $(CTRLER_CLIENT_BIN)
 	rm -rf $(CTRLER_SERVER_BIN)
 	rm -rf $(SHARDKV_CLIENT_BIN)
