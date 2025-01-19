@@ -60,14 +60,14 @@ func ConnectToServers(servers []ServerInfo, excluded map[int]bool) []*labrpc.Cli
 	return clientends
 }
 
-func MakeEnd(name string) *labrpc.ClientEnd {
+func MakeEnd(name string) (clientend *labrpc.ClientEnd, err error) {
 	var host string
 	var port int
 	fmt.Sscanf(name, "%s:%d", &host, &port)
 
 	client, err := rpc.DialHTTP("tcp", name)
 	if err != nil {
-		log.Fatalf("Failed to connect to %s\n", name)
+		return nil, err
 	}
-	return labrpc.MakeClient(client, host, port)
+	return labrpc.MakeClient(client, host, port), nil
 }

@@ -48,7 +48,7 @@ type ShardKV struct {
 	me       int
 	rf       *raft.Raft
 	applyCh  chan raft.ApplyMsg
-	make_end func(string) *labrpc.ClientEnd
+	make_end func(string) (*labrpc.ClientEnd, error)
 	gid      int
 	ctrlers  []*labrpc.ClientEnd
 	mck      *shardctrler.Clerk
@@ -457,7 +457,12 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 			for !kv.killed() {
 				if servers, ok := oldConfig.Groups[gid]; ok {
 					for si := 0; si < len(servers); si++ {
-						srv := kv.make_end(servers[si])
+						srv, err := kv.make_end(servers[si])
+						if err != nil {
+							DPrintf("[SKV-S][%v][%v] Failed to make_end(%v)", kv.gid, kv.me, servers[si])
+							continue
+						}
+
 						args := RequestMapAndSessionArgs{
 							Gid:       kv.gid,
 							Me:        kv.me,
@@ -537,7 +542,12 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 					kv.mu.Unlock()
 
 					for si := 0; si < len(servers); si++ {
-						srv := kv.make_end(servers[si])
+						srv, err := kv.make_end(servers[si])
+						if err != nil {
+							DPrintf("[SKV-S][%v][%v] Failed to make_end(%v)", kv.gid, kv.me, servers[si])
+							continue
+						}
+
 						reply := DeleteShardsReply{}
 						ok := srv.Call("ShardKV.DeleteShards", &args, &reply)
 
@@ -800,7 +810,7 @@ func (kv *ShardKV) killed() bool {
 //
 // StartServer() must return quickly, so it should start goroutines
 // for any long-running work.
-func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *ShardKV {
+func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, ctrlers []*labrpc.ClientEnd, make_end func(string) (*labrpc.ClientEnd, error)) *ShardKV {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})

@@ -36,7 +36,7 @@ func nrand() int64 {
 type Clerk struct {
 	sm       *shardctrler.Clerk
 	config   shardctrler.Config
-	make_end func(string) *labrpc.ClientEnd
+	make_end func(string) (*labrpc.ClientEnd, error)
 
 	id     int64
 	reqNum int64
@@ -49,7 +49,7 @@ type Clerk struct {
 // make_end(servername) turns a server name from a
 // Config.Groups[gid][i] into a labrpc.ClientEnd on which you can
 // send RPCs.
-func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *Clerk {
+func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) (*labrpc.ClientEnd, error)) *Clerk {
 	ck := new(Clerk)
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.make_end = make_end
@@ -79,7 +79,12 @@ func (ck *Clerk) Get(key string) string {
 		if servers, ok := ck.config.Groups[gid]; ok {
 			// try each server for the shard.
 			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
+				srv, err := ck.make_end(servers[si])
+				if err != nil {
+					DPrintf("[SKV-C][%v] Failed to connect to Server [%v][%v]", ck.id, gid, si)
+					continue
+				}
+
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ERR_NoKey) {
@@ -127,7 +132,11 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
 			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
+				srv, err := ck.make_end(servers[si])
+				if err != nil {
+					DPrintf("[SKV-C][%v] Failed to connect to Server [%v][%v]", ck.id, gid, si)
+					continue
+				}
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV."+op, &args, &reply)
 				if ok && reply.Err == OK {

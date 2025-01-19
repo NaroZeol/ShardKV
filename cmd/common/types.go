@@ -8,12 +8,12 @@ type ServerInfo struct {
 
 type GroupInfo struct {
 	Gid     int          `json:"gid"`
+	NServer int          `json:"nserver"`
 	Servers []ServerInfo `json:"servers"`
 }
 
 type Config struct {
-	NServer int          `json:"nserver"`
 	NCtrler int          `json:"nctrler"`
-	Groups  []GroupInfo  `json:"groups"`
 	Ctrlers []ServerInfo `json:"ctrlers"`
+	Groups  []GroupInfo  `json:"groups"`
 }
