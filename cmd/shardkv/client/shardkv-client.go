@@ -35,7 +35,9 @@ func handleInput() (action, key, value string) {
 
 func main() {
 	var configPath string
+	var interactive bool
 	flag.StringVar(&configPath, "c", "", "Config file path")
+	flag.BoolVar(&interactive, "i", false, "Interactive mode")
 	flag.Parse()
 
 	// Load configuration
@@ -48,7 +50,9 @@ func main() {
 
 	// server loop
 	for {
-		fmt.Print("> ")
+		if interactive {
+			fmt.Print("shardkv> ")
+		}
 		cmd, key, value := handleInput()
 
 		switch cmd {

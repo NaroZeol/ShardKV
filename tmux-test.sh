@@ -18,7 +18,7 @@ tmux split-window -v
 tmux split-window -v
 tmux select-layout main-horizontal
 
-tmux send-keys -t 1 "./ctrler/ctrler-client -c config.json" C-m
+tmux send-keys -t 1 "./ctrler/ctrler-client -c config.json -i" C-m
 for i in {2..4}; do
   tmux send-keys -t "$i" "./ctrler/ctrler-server -c config.json -i $((i - 2))" C-m
 done
@@ -55,6 +55,6 @@ tmux send-keys -t 1 "1 localhost:5005 localhost:5006 localhost:5007" C-m C-m
 
 # ShardClients
 tmux new-window -n client
-tmux send-keys -t 1 "./shardkv/shardkv-client -c config.json" C-m
+tmux send-keys -t 1 "./shardkv/shardkv-client -c config.json -i" C-m
 
 tmux attach -t shardkv

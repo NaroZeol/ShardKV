@@ -17,7 +17,6 @@ type ServerInfo = common.ServerInfo
 
 func ReadJoinInfo() map[int][]string {
 	servers := make(map[int][]string)
-	fmt.Println("<format>: gid server1 server2 ... end with empty line")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -51,7 +50,6 @@ func ReadJoinInfo() map[int][]string {
 
 func ReadLeaveInfo() []int {
 	var gids []int
-	fmt.Println("<format>: gid1 gid2 ... end with empty line")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -79,7 +77,9 @@ func ReadLeaveInfo() []int {
 
 func main() {
 	var configPath string
+	var interactive bool
 	flag.StringVar(&configPath, "c", "", "Config file path")
+	flag.BoolVar(&interactive, "i", false, "Interactive mode")
 	flag.Parse()
 
 	// Load configuration
@@ -93,19 +93,29 @@ func main() {
 	// server loop
 	for {
 		var cmd string
-		fmt.Print("> ")
+		if interactive {
+			fmt.Print("ctrler> ")
+		}
 		fmt.Scan(&cmd)
 
 		switch cmd {
 		case "join":
+			if interactive {
+				fmt.Println("<format>: gid server1 server2 ... end with empty line")
+			}
 			servers := ReadJoinInfo()
 			ck.Join(servers)
 		case "leave":
+			if interactive {
+				fmt.Println("<format>: gid1 gid2 ... end with empty line")
+			}
 			gids := ReadLeaveInfo()
 			ck.Leave(gids)
 		case "query":
 			var num int
-			fmt.Print("Num: ")
+			if interactive {
+				fmt.Print("Num: ")
+			}
 			fmt.Scan(&num)
 			cfg := ck.Query(num)
 			fmt.Println(cfg)
