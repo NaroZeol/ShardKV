@@ -24,7 +24,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 const ConfigChangeTrace = false
-const ConfigReport = true
+const ConfigReport = false
 
 func ConfigChangeTracePrintf(format string, a ...interface{}) (n int, err error) {
 	if ConfigChangeTrace {
