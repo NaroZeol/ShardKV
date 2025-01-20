@@ -10,8 +10,6 @@ package raft
 //
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
 	"os"
 	"sync"
@@ -55,18 +53,15 @@ func (ps *Persister) ReadRaftState() []byte {
 
 	ps.rsfp.Seek(0, 0)
 
-	var raftStateSize int32
-	err := binary.Read(ps.rsfp, binary.LittleEndian, &raftStateSize)
-	if err != nil && err.Error() == "EOF" { // fix for startup
-		return nil
-	} else if err != nil {
+	finfo, err := ps.rsfp.Stat()
+	if err != nil {
 		panic(err)
 	}
 
-	raftState := make([]byte, raftStateSize)
-	err = binary.Read(ps.rsfp, binary.LittleEndian, &raftState)
-	if err != nil {
-		panic(err)
+	raftState := make([]byte, finfo.Size())
+	size, err := ps.rsfp.Read(raftState)
+	if err != nil || size != len(raftState) {
+		panic("Error reading from file")
 	}
 
 	return raftState
@@ -76,16 +71,12 @@ func (ps *Persister) RaftStateSize() int {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	ps.rsfp.Seek(0, 0)
-
-	var raftStateSize int32
-	err := binary.Read(ps.rsfp, binary.LittleEndian, &raftStateSize)
-	if err != nil && err.Error() == "EOF" { // fix for startup
-		return 0
-	} else if err != nil {
+	finfo, err := ps.rsfp.Stat()
+	if err != nil {
 		panic(err)
 	}
-	return int(raftStateSize)
+
+	return int(finfo.Size())
 }
 
 // Save both Raft state and K/V snapshot as a single atomic action,
@@ -97,23 +88,15 @@ func (ps *Persister) Save(raftstate []byte, snapshot []byte) {
 	ps.rsfp.Seek(0, 0)
 	ps.snapfp.Seek(0, 0)
 
-	raftstateBuf := new(bytes.Buffer)
-	if err := binary.Write(raftstateBuf, binary.LittleEndian, int32(len(raftstate))); err != nil {
-		panic(err)
-	}
-	if err := binary.Write(raftstateBuf, binary.LittleEndian, raftstate); err != nil {
-		panic(err)
-	}
-	binary.Write(ps.rsfp, binary.LittleEndian, raftstateBuf.Bytes())
+	size1, err1 := ps.rsfp.Write(raftstate)
+	size2, err2 := ps.snapfp.Write(snapshot)
 
-	snapshotBuf := new(bytes.Buffer)
-	if err := binary.Write(snapshotBuf, binary.LittleEndian, int32(len(snapshot))); err != nil {
-		panic(err)
+	if err1 != nil || err2 != nil || size1 != len(raftstate) || size2 != len(snapshot) {
+		panic("Error writing to files")
 	}
-	if err := binary.Write(snapshotBuf, binary.LittleEndian, snapshot); err != nil {
-		panic(err)
-	}
-	binary.Write(ps.snapfp, binary.LittleEndian, snapshotBuf.Bytes())
+
+	ps.rsfp.Truncate(int64(len(raftstate)))
+	ps.snapfp.Truncate(int64(len(snapshot)))
 
 	ps.rsfp.Sync()
 	ps.snapfp.Sync()
@@ -125,19 +108,17 @@ func (ps *Persister) ReadSnapshot() []byte {
 
 	ps.snapfp.Seek(0, 0)
 
-	var snapshotSize int32
-	err := binary.Read(ps.snapfp, binary.LittleEndian, &snapshotSize)
-	if err != nil && err.Error() == "EOF" {
-		return nil
-	} else if err != nil {
-		panic(err)
-	}
-
-	snapshot := make([]byte, snapshotSize)
-	err = binary.Read(ps.snapfp, binary.LittleEndian, &snapshot)
+	finfo, err := ps.snapfp.Stat()
 	if err != nil {
 		panic(err)
 	}
+
+	snapshot := make([]byte, finfo.Size())
+	size, err := ps.snapfp.Read(snapshot)
+	if err != nil || size != len(snapshot) {
+		panic("Error reading from file")
+	}
+
 	return snapshot
 }
 
@@ -145,14 +126,10 @@ func (ps *Persister) SnapshotSize() int {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	ps.snapfp.Seek(0, 0)
-
-	var snapshotSize int32
-	err := binary.Read(ps.snapfp, binary.LittleEndian, &snapshotSize)
-	if err != nil && err.Error() == "EOF" {
-		return 0
-	} else if err != nil {
+	finfo, err := ps.snapfp.Stat()
+	if err != nil {
 		panic(err)
 	}
-	return int(snapshotSize)
+
+	return int(finfo.Size())
 }
