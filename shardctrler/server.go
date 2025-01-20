@@ -156,7 +156,7 @@ func (sc *ShardCtrler) waittingForCommit(op Op, index int, args GenericArgs, rep
 		}
 		sc.mu.Unlock()
 
-		if time.Since(startTime) > 30*time.Millisecond {
+		if time.Since(startTime) > 100*time.Millisecond {
 			DPrintf("[SC-S][%v] Failed to commit op #%v, timeout", sc.me, index)
 			reply.setErr(ERR_CommitTimeout)
 			return

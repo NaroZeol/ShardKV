@@ -245,7 +245,7 @@ func (kv *ShardKV) waittingForCommit(op Op, index int, args GenericArgs, reply G
 		}
 		kv.mu.Unlock()
 
-		if time.Since(startTime) > 30*time.Millisecond {
+		if time.Since(startTime) > 100*time.Millisecond {
 			DPrintf("[SKV-S][%v][%v] Failed to commit op #%v, timeout", kv.gid, kv.me, index)
 			reply.setErr(ERR_CommitTimeout)
 			return
