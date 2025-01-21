@@ -443,6 +443,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if i == len(args.Entries) {
 			DPrintf("[%v] refuse to use fix package because it's prefix entries", rf.me)
 			DPrintf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
+			reply.Success = true
 			return nil
 		}
 
