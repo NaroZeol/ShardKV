@@ -366,7 +366,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 
 	if len(args.Entries) != 0 {
-		DPrintf("[%v] receive AppendEntries from [%v] in term %v from #%v to #%v\n", rf.me, args.LeaderId, args.Term, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries))
+		DPrintf("[%v] receive AppendEntries from [%v] in term %v from #%v to #%v\n", rf.me, args.LeaderId, args.Term, args.Entries[0].Index, args.Entries[len(args.Entries)-1].Index)
 	} else {
 		DPrintf("[%v] receive heartbeat from [%v] in term %v", rf.me, args.LeaderId, args.Term)
 	}
@@ -434,14 +434,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		for ; i < len(args.Entries) && rf.localIndex(i+rf.lastApplied+1) < len(rf.log); i++ {
 			if rf.localIndex(i+rf.lastApplied+1) < 0 {
 				i = len(args.Entries)
+				log.Println("hit branch")
 				break
 			}
 			if args.Entries[i].Term != rf.log[rf.localIndex(i+rf.lastApplied+1)].Term {
+				i = -1 // not prefix entries, let i = -1 to make condition false
 				break
 			}
 		}
 		if i == len(args.Entries) {
-			DPrintf("[%v] refuse to use fix package because it's prefix entries", rf.me)
+			DPrintf("[%v] refuse to use fix package because they are prefix entries", rf.me)
 			DPrintf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
 			reply.Success = true
 			return nil
@@ -722,16 +724,12 @@ func (rf *Raft) election(cancelToken *int32) {
 		go func(server int) {
 			reply := RequestVoteReply{}
 
-			// repeat sending vote request until
-			ok := false
-			retryCount := 0
-			for !ok && atomic.LoadInt32(cancelToken) != 1 { // Retry forever
-				ok = rf.sendRequestVote(server, &args, &reply)
-				if retryCount++; retryCount >= MAX_RETRY_TIMES {
-					DPrintf("[%v] try %v times to send RequestVote to [%v]. stop sending", rf.me, MAX_RETRY_TIMES, server)
-					return
-				}
+			ok := rf.sendRequestVote(server, &args, &reply)
+			if !ok {
+				DPrintf("[%v] fail to send RequestVote to [%v]", rf.me, server)
+				return
 			}
+
 			if atomic.LoadInt32(cancelToken) == 1 {
 				return // cancel
 			}
@@ -884,15 +882,12 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 		newNextIndex := rf.globalLogLen()
 
 		go func(server int) {
-			ok := false
-			retryCount := 0
-			for atomic.LoadInt32(cancelToken) != 1 && !ok {
-				ok = rf.sendAppendEntries(server, &args, &reply)
-				if retryCount++; retryCount >= MAX_RETRY_TIMES {
-					DPrintf("[%v] try %v times to send AppendEntries to [%v], stop sending", rf.me, MAX_RETRY_TIMES, server)
-					return
-				}
+			ok := rf.sendAppendEntries(server, &args, &reply)
+			if !ok {
+				DPrintf("[%v] fail to send AppendEntries to [%v]", rf.me, server)
+				return
 			}
+
 			if atomic.LoadInt32(cancelToken) == 1 { // is cancelled
 				return
 			}
@@ -972,15 +967,12 @@ func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *Ap
 		rf.mu.Unlock()
 		DPrintf("[%v] try to send InstallSnapshot to [%v]", rf.me, server)
 
-		ok := false
-		retryCount := 0
-		for atomic.LoadInt32(cancelToken) != 1 && !ok {
-			ok = rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
-			if retryCount++; retryCount >= MAX_RETRY_TIMES {
-				DPrintf("[%v] try %v times to send InstallSnapshot to [%v] but failed, stop sending", rf.me, MAX_RETRY_TIMES, server)
-				return
-			}
+		ok := rf.sendInstallSnapshot(server, &snapshotArgs, &snapshotReply)
+		if !ok {
+			DPrintf("[%v] fail to send InstallSnapshot to [%v]", rf.me, server)
+			return
 		}
+
 		if atomic.LoadInt32(cancelToken) == 1 { // is cancelled
 			return
 		}
