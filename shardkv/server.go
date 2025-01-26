@@ -62,7 +62,6 @@ type ShardKV struct {
 	mp          map[string]string
 	ckSessions  map[string]Session // {string(ckId+shardNum)} -> session
 	logRecord   map[int]Op
-	confirmMap  map[int]bool
 	lastApplied int
 
 	uid           int64
@@ -630,13 +629,6 @@ func (kv *ShardKV) handleApplyMsg() {
 
 			if kv.maxraftstate != -1 && kv.persister.RaftStateSize() >= kv.maxraftstate {
 				DPrintf("[SKV-S][%v][%v] %v >= %v try to create snapshot up to #%v", kv.gid, kv.me, kv.persister.RaftStateSize(), kv.maxraftstate, applyMsg.CommandIndex)
-				for key := range kv.logRecord {
-					if kv.confirmMap[key] {
-						delete(kv.logRecord, key)
-						delete(kv.confirmMap, key)
-					}
-				}
-
 				newSnapshot := Snapshot{
 					Mp:            kv.mp,
 					CkSessions:    kv.ckSessions,
@@ -650,6 +642,12 @@ func (kv *ShardKV) handleApplyMsg() {
 				encoder.Encode(newSnapshot)
 
 				kv.rf.Snapshot(applyMsg.CommandIndex, buffer.Bytes())
+
+				for index := range kv.logRecord {
+					if index < applyMsg.CommandIndex {
+						delete(kv.logRecord, index)
+					}
+				}
 				DPrintf("[SKV-S][%v][%v] create snapshot up to #%v successfully", kv.gid, kv.me, applyMsg.CommandIndex)
 			}
 			kv.mu.Unlock()
@@ -842,7 +840,6 @@ func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persis
 	rpc.Register(kv.rf)
 
 	kv.mp = make(map[string]string)
-	kv.confirmMap = make(map[int]bool)
 	kv.ckSessions = make(map[string]Session)
 	kv.logRecord = make(map[int]Op)
 

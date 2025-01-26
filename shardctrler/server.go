@@ -46,7 +46,6 @@ type ShardCtrler struct {
 	configs       []Config // indexed by config num
 	ckSessions    map[int64]Session
 	logRecord     map[int]Op
-	confirmMap    map[int]bool
 	lastApplied   int
 	snapshotIndex int
 }
@@ -421,13 +420,6 @@ func (sc *ShardCtrler) handleApplyMsg() {
 
 			if sc.maxraftstate != -1 && sc.persister.RaftStateSize() >= sc.maxraftstate {
 				DPrintf("[SC-S][%v] %v >= %v try to create snapshot up to #%v", sc.me, sc.persister.RaftStateSize(), sc.maxraftstate, applyMsg.CommandIndex)
-				for key := range sc.logRecord {
-					if sc.confirmMap[key] {
-						delete(sc.logRecord, key)
-						delete(sc.confirmMap, key)
-					}
-				}
-
 				newSnapshot := Snapshot{
 					Configs:    sc.configs,
 					CkSessions: sc.ckSessions,
@@ -438,6 +430,12 @@ func (sc *ShardCtrler) handleApplyMsg() {
 				encoder.Encode(newSnapshot)
 
 				sc.rf.Snapshot(applyMsg.CommandIndex, buffer.Bytes())
+
+				for index := range sc.logRecord {
+					if index < applyMsg.CommandIndex {
+						delete(sc.logRecord, index)
+					}
+				}
 				DPrintf("[SC-S][%v] create snapshot up to #%v successfully", sc.me, applyMsg.CommandIndex)
 			}
 			sc.mu.Unlock()
@@ -502,7 +500,6 @@ func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persis
 	sc.configs[0].Groups = map[int][]string{}
 	sc.configs[0].Shards = [NShards]int{0}
 
-	sc.confirmMap = make(map[int]bool, 0)
 	sc.ckSessions = make(map[int64]Session)
 	sc.logRecord = make(map[int]Op)
 
