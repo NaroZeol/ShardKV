@@ -396,11 +396,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	updateCommitIndex := func() {
-		if rf.commitIndex != args.LeaderCommit {
-			DPrintf("[%v] update commitIndex to #%v", rf.me, args.LeaderCommit)
+		if rf.commitIndex < args.LeaderCommit {
+			min := 0
+			if args.LeaderCommit < rf.globalLogLen()-1 {
+				min = args.LeaderCommit
+			} else {
+				min = rf.globalLogLen() - 1
+			}
+
+			rf.commitIndex = min
+			rf.enqueueCond.Signal()
+		} else {
+			rf.commitCond.Signal()
 		}
-		rf.commitIndex = args.LeaderCommit
-		rf.enqueueCond.Signal()
 	}
 
 	// Log Synchronization
@@ -446,6 +454,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			DPrintf("[%v] refuse to use fix package because they are prefix entries", rf.me)
 			DPrintf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
 			reply.Success = true
+			updateCommitIndex()
 			return nil
 		}
 
