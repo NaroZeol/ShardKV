@@ -154,6 +154,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					DPrintf("[SKV-C][%v] Failed to connect to Server [%v][%v]", ck.id, gid, si)
 					continue
 				}
+				defer func() {
+					srv.Close()
+				}()
+
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV."+op, &args, &reply)
 				if ok && reply.Err == OK {

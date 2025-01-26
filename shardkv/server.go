@@ -551,6 +551,9 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 							DPrintf("[SKV-S][%v][%v] Failed to make_end(%v)", kv.gid, kv.me, servers[si])
 							continue
 						}
+						defer func() {
+							srv.Close()
+						}()
 
 						reply := DeleteShardsReply{}
 						ok := srv.Call("ShardKV.DeleteShards", &args, &reply)
