@@ -47,6 +47,7 @@ func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bo
 					// log.Println("Failed to reconnect to ", e.addr, ":", e.port)
 					return false
 				}
+				e.rc.Close()
 				e.rc = c
 			} else {
 				// log.Println("Call ", svcMeth, " to ", e.addr, ":", e.port, " succeeded")
@@ -56,5 +57,11 @@ func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bo
 			// log.Println("Call ", svcMeth, " to ", e.addr, ":", e.port, " timed out")
 			return false
 		}
+	}
+}
+
+func (e *ClientEnd) Close() {
+	if e.rc != nil {
+		e.rc.Close()
 	}
 }

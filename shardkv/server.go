@@ -458,6 +458,10 @@ func (kv *ShardKV) MoveShards(oldConfig shardctrler.Config, newConfig shardctrle
 				if servers, ok := oldConfig.Groups[gid]; ok {
 					for si := 0; si < len(servers); si++ {
 						srv, err := kv.make_end(servers[si])
+						defer func() {
+							srv.Close()
+						}()
+
 						if err != nil {
 							DPrintf("[SKV-S][%v][%v] Failed to make_end(%v)", kv.gid, kv.me, servers[si])
 							continue

@@ -88,6 +88,10 @@ func (ck *Clerk) Get(key string) string {
 				si := (startIndex + i) % len(servers)
 
 				srv, err := ck.make_end(servers[si])
+				defer func() {
+					srv.Close()
+				}()
+
 				if err != nil {
 					DPrintf("[SKV-C][%v] Failed to connect to Server [%v][%v]", ck.id, gid, si)
 					continue
