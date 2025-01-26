@@ -19,8 +19,10 @@ type ServerInfo = common.ServerInfo
 func main() {
 	var id int
 	var configPath string
+	var maxraftstate int
 	flag.IntVar(&id, "i", -1, "Server ID")
 	flag.StringVar(&configPath, "c", "", "Config file path")
+	flag.IntVar(&maxraftstate, "m", 8192, "Max Raft state size(bytes)")
 	flag.Parse()
 
 	// Load configuration
@@ -42,7 +44,7 @@ func main() {
 	persister := raft.MakePersister(-1, id) // -1 to shardctrler
 
 	// start shardctrler
-	ctrler := shardctrler.StartServer(servers, id, persister)
+	ctrler := shardctrler.StartServer(servers, id, persister, maxraftstate)
 	rpc.Register(ctrler)
 
 	select {}

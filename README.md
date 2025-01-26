@@ -35,6 +35,8 @@ shardkv-server:
         组ID，必须指定
     -i int
         组内服务器ID，必须指定
+    -m int
+        触发快照的最大内存大小（单位：字节）
 
 shardkv-client:
     -c string
@@ -47,6 +49,8 @@ ctrler-server:
         配置文件路径，必须指定
     -i int
         服务器ID，必须指定
+    -m int
+        触发快照的最大内存大小（单位：字节）
 
 ctrler-client:
     -c string

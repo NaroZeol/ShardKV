@@ -35,6 +35,8 @@ shardkv-server:
         Group ID (required).
     -i int
         Server ID within the group (required).
+    -m int
+        Max Raft state size(bytes) (default 8192)
 
 shardkv-client:
     -c string
@@ -47,6 +49,8 @@ ctrler-server:
         Path to the configuration file (required).
     -i int
         Server ID (required).
+    -m int
+        Max Raft state size(bytes) (default 8192)
 
 ctrler-client:
     -c string

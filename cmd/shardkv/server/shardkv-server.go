@@ -21,9 +21,11 @@ func main() {
 	var id int
 	var gid int
 	var configPath string
+	var maxraftstate int
 	flag.IntVar(&id, "i", -1, "Server ID")
 	flag.IntVar(&gid, "g", -1, "Group ID")
 	flag.StringVar(&configPath, "c", "", "Config file path")
+	flag.IntVar(&maxraftstate, "m", 8192, "Max Raft state size(bytes)")
 	flag.Parse()
 
 	// Load configuration
@@ -46,10 +48,9 @@ func main() {
 
 	// create persister
 	persister := raft.MakePersister(gid, id)
-	maxRaftState := 2048
 
 	// start server
-	sv := shardkv.StartServer(servers, id, persister, maxRaftState, gid, ctrlers, common.MakeEnd)
+	sv := shardkv.StartServer(servers, id, persister, maxraftstate, gid, ctrlers, common.MakeEnd)
 	rpc.Register(sv)
 
 	// wait forever

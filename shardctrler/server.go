@@ -482,7 +482,7 @@ func (sc *ShardCtrler) Raft() *raft.Raft {
 // servers that will cooperate via Raft to
 // form the fault-tolerant shardctrler service.
 // me is the index of the current server in servers[].
-func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persister) *ShardCtrler {
+func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *ShardCtrler {
 	gob.Register(Op{})
 	gob.Register(JoinArgs{})
 	gob.Register(LeaveArgs{})
@@ -491,7 +491,7 @@ func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persis
 
 	sc := new(ShardCtrler)
 	sc.me = me
-	sc.maxraftstate = 8192
+	sc.maxraftstate = maxraftstate
 	sc.persister = persister
 
 	sc.applyCh = make(chan raft.ApplyMsg)
