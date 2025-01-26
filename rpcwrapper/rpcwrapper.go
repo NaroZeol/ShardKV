@@ -53,7 +53,7 @@ func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bo
 				// log.Println("Call ", svcMeth, " to ", e.addr, ":", e.port, " succeeded")
 				return true
 			}
-		case <-time.After(1 * time.Second):
+		case <-time.After(100 * time.Millisecond):
 			// log.Println("Call ", svcMeth, " to ", e.addr, ":", e.port, " timed out")
 			return false
 		}
