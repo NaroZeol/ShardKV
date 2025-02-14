@@ -1,12 +1,12 @@
 # ShardKV
 
-本项目基于MIT-6.5840（2024版本）的[最后一个lab](https://pdos.csail.mit.edu/6.824/labs/lab-shard.html)
+本项目基于MIT-6.5840（2024版本）的[最后一个lab](http://nil.csail.mit.edu/6.5840/2024/labs/lab-shard.html)
 
 > 一个键值存储系统，通过一组副本组对键进行分片或分区。一个分片是键/值对的一个子集；例如，所有以“a”开头的键可能是一个分片，所有以“b”开头的键可能是另一个分片，依此类推。分片的原因是性能。每个副本组仅处理几个分片的puts和gets，而且这些组是并行操作的；因此，总系统吞吐量（每单位时间的puts和gets）与组数成正比。
 
 简单来说就是一个基于[Raft协议](https://raft.github.io/)实现的分布式的键值存储系统，支持分片，副本，故障恢复等功能。
 
-[English doc](README.md)
+[English doc](README-en.md)
 
 ## 项目结构
 
