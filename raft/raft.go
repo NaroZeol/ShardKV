@@ -41,19 +41,19 @@ import (
 type ApplyMsg struct {
 	CommandValid bool
 	Command      []byte
-	CommandIndex int
+	CommandIndex int64
 
 	// For 3D:
 	SnapshotValid bool
 	Snapshot      []byte
-	SnapshotTerm  int
-	SnapshotIndex int
+	SnapshotTerm  int64
+	SnapshotIndex int64
 }
 
 type logEntry struct {
-	Term    int
-	Type    int
-	Index   int
+	Term    int64
+	Type    int64
+	Index   int64
 	Command []byte
 }
 
@@ -62,27 +62,27 @@ type Raft struct {
 	mu        sync.Mutex              // Lock to protect shared access to this peer's state
 	peers     []*rpcwrapper.ClientEnd // RPC end points of all peers
 	persister *Persister              // Object to hold this peer's persisted state
-	me        int                     // this peer's index into peers[]
+	me        int64                   // this peer's index into peers[]
 	dead      int32                   // set by Kill()
 
 	// Persistent state on all servers
 	state       raftState
-	currentTerm int
+	currentTerm int64
 	log         []logEntry
-	votedFor    *int
+	votedFor    *int64
 
 	// Snapshot
 	snapshot      []byte
-	snapshotIndex int
-	snapshotTerm  int
+	snapshotIndex int64
+	snapshotTerm  int64
 
 	// Volatile state on all servers
-	commitIndex int
-	lastApplied int
+	commitIndex int64
+	lastApplied int64
 
 	// Volatile state on leaders
-	nextIndex  []int
-	matchIndex []int
+	nextIndex  []int64
+	matchIndex []int64
 
 	// HeartBeat
 	lastHeartBeat time.Time
@@ -107,11 +107,12 @@ type Raft struct {
 //
 // internalIndex:
 // the global index raft using inside raft's inner function
-func (rf *Raft) internalIndex(externalIndex int) int {
-	index := 0
-	cnt := 0
+func (rf *Raft) internalIndex(externalIndex int64) int64 {
+	index := (int64)(0)
+	cnt := (int64)(0)
 	target := externalIndex - rf.snapshotIndex
 	for i := range rf.log {
+		i := int64(i)
 		index = i
 		if rf.log[i].Type != LT_Noop {
 			cnt += 1
@@ -124,10 +125,10 @@ func (rf *Raft) internalIndex(externalIndex int) int {
 }
 
 // Convert internalIndex to externalIndex
-func (rf *Raft) externalIndex(internalIndex int) int {
-	index := 0
+func (rf *Raft) externalIndex(internalIndex int64) int64 {
+	index := (int64)(0)
 	tartget := internalIndex - rf.log[0].Index
-	for i := 1; i <= tartget; i++ {
+	for i := (int64)(1); i <= tartget; i++ {
 		if rf.log[i].Type != LT_Noop {
 			index += 1
 		}
@@ -135,23 +136,23 @@ func (rf *Raft) externalIndex(internalIndex int) int {
 	return index + rf.snapshotIndex
 }
 
-func (rf *Raft) localIndex(globalIndex int) int {
+func (rf *Raft) localIndex(globalIndex int64) int64 {
 	return globalIndex - rf.log[0].Index
 }
 
-func (rf *Raft) globalIndex(localIndex int) int {
+func (rf *Raft) globalIndex(localIndex int64) int64 {
 	return localIndex + rf.log[0].Index
 }
 
-func (rf *Raft) globalLogLen() int {
-	return len(rf.log) + rf.log[0].Index
+func (rf *Raft) globalLogLen() int64 {
+	return int64(len(rf.log)) + rf.log[0].Index
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
-func (rf *Raft) GetState() (int, bool) {
+func (rf *Raft) GetState() (int64, bool) {
 
-	var term int
+	var term int64
 	var isleader bool
 	// Your code here (3A).
 	rf.mu.Lock()
@@ -200,11 +201,11 @@ func (rf *Raft) readPersist(data []byte) {
 	d := gob.NewDecoder(r)
 
 	var _state raftState
-	var _currentTerm int
+	var _currentTerm int64
 	var _log []logEntry
-	var _snapshotIndex int
-	var _snapshotTerm int
-	var _votedFor *int
+	var _snapshotIndex int64
+	var _snapshotTerm int64
+	var _votedFor *int64
 
 	if d.Decode(&_state) != nil ||
 		d.Decode(&_currentTerm) != nil ||
@@ -214,7 +215,7 @@ func (rf *Raft) readPersist(data []byte) {
 		DPrintf("[%v] readPersist failed", rf.me)
 		return
 	}
-	var tmp int
+	var tmp int64
 	if d.Decode(&tmp) != nil {
 		DPrintf("[%v] readPersist failed", rf.me)
 		return
@@ -241,7 +242,7 @@ func (rf *Raft) readPersist(data []byte) {
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
+func (rf *Raft) Snapshot(index int64, snapshot []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -273,45 +274,45 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 }
 
 type RequestVoteArgs struct {
-	Term         int
-	CandiateId   int
-	LastLogIndex int
-	LastLogTerm  int
+	Term         int64
+	CandiateId   int64
+	LastLogIndex int64
+	LastLogTerm  int64
 }
 
 type RequestVoteReply struct {
-	Term        int
+	Term        int64
 	VoteGranted bool
 }
 
 type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int
-	PrevLogTerm  int
+	Term         int64
+	LeaderId     int64
+	PrevLogIndex int64
+	PrevLogTerm  int64
 	Entries      []logEntry
-	LeaderCommit int
+	LeaderCommit int64
 }
 
 type AppendEntriesReply struct {
-	Term         int
+	Term         int64
 	Success      bool
-	PrevLogIndex int
-	PrevLogTerm  int
-	LastApplied  int
+	PrevLogIndex int64
+	PrevLogTerm  int64
+	LastApplied  int64
 }
 
 type InstallSnapshotArgs struct {
-	Term                 int
-	LeaderId             int
-	LastIncludedInternal int
-	LastIncludedIndex    int
-	LastIncludedTerm     int
+	Term                 int64
+	LeaderId             int64
+	LastIncludedInternal int64
+	LastIncludedIndex    int64
+	LastIncludedTerm     int64
 	Data                 []byte
 }
 
 type InstallSnapshotReply struct {
-	Term int
+	Term int64
 }
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) error {
@@ -397,7 +398,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	updateCommitIndex := func() {
 		if rf.commitIndex < args.LeaderCommit {
-			min := 0
+			min := (int64)(0)
 			if args.LeaderCommit < rf.globalLogLen()-1 {
 				min = args.LeaderCommit
 			} else {
@@ -438,10 +439,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// fix package from leader
 	if prevLogIndex > args.PrevLogIndex && args.PrevLogIndex == rf.lastApplied {
 		// prefix entries check
-		i := 0
-		for ; i < len(args.Entries) && rf.localIndex(i+rf.lastApplied+1) < len(rf.log); i++ {
+		i := (int64)(0)
+		for ; i < (int64)(len(args.Entries)) && rf.localIndex(i+rf.lastApplied+1) < int64(len(rf.log)); i++ {
 			if rf.localIndex(i+rf.lastApplied+1) < 0 {
-				i = len(args.Entries)
+				i = int64(len(args.Entries))
 				log.Println("hit branch")
 				break
 			}
@@ -450,7 +451,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				break
 			}
 		}
-		if i == len(args.Entries) {
+		if i == (int64(len(args.Entries))) {
 			DPrintf("[%v] refuse to use fix package because they are prefix entries", rf.me)
 			DPrintf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
 			reply.Success = true
@@ -474,7 +475,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if prevLogIndex != args.PrevLogIndex || prevLogTerm != args.PrevLogTerm {
 		reply.Success = false
 		if len(args.Entries) != 0 { //ignore printing heart beat message
-			DPrintf("[%v] reject to append entries from #%v to #%v with different index #%v or term %v", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+len(args.Entries), prevLogIndex, prevLogTerm)
+			DPrintf("[%v] reject to append entries from #%v to #%v with different index #%v or term %v", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+int64(len(args.Entries)), prevLogIndex, prevLogTerm)
 			DPrintf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
 		}
 		return nil
@@ -512,7 +513,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	// Figure 13 step 6
 	if rf.localIndex(args.LastIncludedInternal) >= 0 &&
-		rf.localIndex(args.LastIncludedInternal) < len(rf.log) &&
+		rf.localIndex(args.LastIncludedInternal) < (int64(len(rf.log))) &&
 		args.LastIncludedTerm == rf.log[rf.localIndex(args.LastIncludedInternal)].Term {
 		rf.log = rf.log[rf.localIndex(args.LastIncludedInternal):]
 		rf.log[0].Type = LT_Noop
@@ -584,17 +585,17 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+func (rf *Raft) sendRequestVote(server int64, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
 
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+func (rf *Raft) sendAppendEntries(server int64, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
 
-func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+func (rf *Raft) sendInstallSnapshot(server int64, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
 	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
 	return ok
 }
@@ -611,9 +612,9 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
-func (rf *Raft) Start(command []byte) (int, int, bool) {
-	index := -1
-	term := -1
+func (rf *Raft) Start(command []byte) (int64, int64, bool) {
+	index := int64(-1)
+	term := int64(-1)
 	isLeader := true
 
 	rf.mu.Lock()
@@ -726,11 +727,12 @@ func (rf *Raft) election(cancelToken *int32) {
 	votedForTerm := rf.currentTerm
 
 	for i := range rf.peers {
+		i := int64(i)
 		if i == rf.me {
 			continue
 		}
 
-		go func(server int) {
+		go func(server int64) {
 			reply := RequestVoteReply{}
 
 			ok := rf.sendRequestVote(server, &args, &reply)
@@ -775,6 +777,7 @@ func (rf *Raft) election(cancelToken *int32) {
 			rf.persist()
 			// Reinitialized after election
 			for i := range rf.peers {
+				i := int64(i)
 				if i == rf.me {
 					continue
 				}
@@ -866,6 +869,7 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 
 	// currentIndex := len(rf.log) - 1
 	for i := range rf.peers {
+		i := int64(i)
 		if i == rf.me {
 			continue
 		}
@@ -890,7 +894,7 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 
 		newNextIndex := rf.globalLogLen()
 
-		go func(server int) {
+		go func(server int64) {
 			ok := rf.sendAppendEntries(server, &args, &reply)
 			if !ok {
 				DPrintf("[%v] fail to send AppendEntries to [%v]", rf.me, server)
@@ -917,7 +921,7 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 	}
 }
 
-func (rf *Raft) handleFailedReply(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, cancelToken *int32) {
+func (rf *Raft) handleFailedReply(server int64, args *AppendEntriesArgs, reply *AppendEntriesReply, cancelToken *int32) {
 	rf.mu.Lock()
 	// defer rf.cond.Signal()
 	// Case 0: higher term, turn to follower
@@ -1060,7 +1064,7 @@ func (rf *Raft) heartBeat(cancelToken *int32) {
 	}
 }
 
-func (rf *Raft) serveAsLeader(term int) {
+func (rf *Raft) serveAsLeader(term int64) {
 	cancelToken := int32(0)
 
 	go rf.commitCheck(&cancelToken)
@@ -1091,7 +1095,7 @@ func (rf *Raft) serveAsLeader(term int) {
 // tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
-func Make(peers []*rpcwrapper.ClientEnd, me int,
+func Make(peers []*rpcwrapper.ClientEnd, me int64,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
@@ -1151,11 +1155,11 @@ func Make(peers []*rpcwrapper.ClientEnd, me int,
 		}
 
 		// Volatile state on leaders
-		rf.nextIndex = make([]int, len(rf.peers))
+		rf.nextIndex = make([]int64, len(rf.peers))
 		for i := range rf.nextIndex {
 			rf.nextIndex[i] = rf.globalLogLen() // initialized to leader last log index + 1 (Figure 2)
 		}
-		rf.matchIndex = make([]int, len(rf.peers))
+		rf.matchIndex = make([]int64, len(rf.peers))
 
 		// // Always start as follower
 		// rf.state = RS_Follower

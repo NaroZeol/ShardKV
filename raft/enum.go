@@ -11,6 +11,6 @@ const (
 
 // logType
 const (
-	LT_Normal int = 0
-	LT_Noop   int = 1
+	LT_Normal int64 = 0
+	LT_Noop   int64 = 1
 )

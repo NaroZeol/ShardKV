@@ -26,7 +26,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 
 type Session struct {
 	LastOpVaild bool
-	LastOpIndex int
+	LastOpIndex int64
 
 	LastOpNumber   int64
 	LastOpReqNum   int64
@@ -76,8 +76,8 @@ type ShardKV struct {
 
 	mp          map[string]string
 	ckSessions  map[string]Session // {string(ckId+shardNum)} -> session
-	logRecord   map[int]Op
-	lastApplied int
+	logRecord   map[int64]Op
+	lastApplied int64
 
 	uid           int64
 	localReqNum   int64
@@ -240,7 +240,7 @@ func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType 
 	kv.waittingForCommit(op, index, args, reply, opType)
 }
 
-func (kv *ShardKV) waittingForCommit(op Op, index int, args GenericArgs, reply GenericReply, opType string) {
+func (kv *ShardKV) waittingForCommit(op Op, index int64, args GenericArgs, reply GenericReply, opType string) {
 	startTime := time.Now()
 	for !kv.killed() {
 		kv.mu.Lock()
@@ -853,12 +853,12 @@ func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persis
 
 	kv.persister = persister
 	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.rf = raft.Make(servers, (int64)(me), persister, kv.applyCh)
 	rpc.Register(kv.rf)
 
 	kv.mp = make(map[string]string)
 	kv.ckSessions = make(map[string]Session)
-	kv.logRecord = make(map[int]Op)
+	kv.logRecord = make(map[int64]Op)
 
 	kv.snapShotIndex = 0
 	kv.lastApplied = 0

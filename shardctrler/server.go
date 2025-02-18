@@ -45,15 +45,15 @@ type ShardCtrler struct {
 
 	configs       []Config // indexed by config num
 	ckSessions    map[int64]Session
-	logRecord     map[int]Op
-	lastApplied   int
-	snapshotIndex int
+	logRecord     map[int64]Op
+	lastApplied   int64
+	snapshotIndex int64
 }
 
 type Session struct {
 	LastOp      Op
 	LastOpVaild bool
-	LastOpIndex int
+	LastOpIndex int64
 }
 
 type Op struct {
@@ -151,7 +151,7 @@ func (sc *ShardCtrler) handleNomalRPC(args GenericArgs, reply GenericReply, opTy
 	sc.waittingForCommit(op, index, args, reply, opType)
 }
 
-func (sc *ShardCtrler) waittingForCommit(op Op, index int, args GenericArgs, reply GenericReply, opType string) {
+func (sc *ShardCtrler) waittingForCommit(op Op, index int64, args GenericArgs, reply GenericReply, opType string) {
 	startTime := time.Now()
 	for !sc.killed() {
 		sc.mu.Lock()
@@ -510,7 +510,7 @@ func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persis
 	sc.persister = persister
 
 	sc.applyCh = make(chan raft.ApplyMsg)
-	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
+	sc.rf = raft.Make(servers, (int64)(me), persister, sc.applyCh)
 	rpc.Register(sc.rf)
 
 	sc.configs = make([]Config, 1)
@@ -518,7 +518,7 @@ func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persis
 	sc.configs[0].Shards = [NShards]int{0}
 
 	sc.ckSessions = make(map[int64]Session)
-	sc.logRecord = make(map[int]Op)
+	sc.logRecord = make(map[int64]Op)
 
 	sc.snapshotIndex = 0
 	sc.lastApplied = 0
