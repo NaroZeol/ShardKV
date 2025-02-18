@@ -1,7 +1,6 @@
 package raft
 
 type raftState int
-type logType int
 
 // raftState
 const (
@@ -12,6 +11,6 @@ const (
 
 // logType
 const (
-	LT_Normal logType = 0
-	LT_Noop   logType = 1
+	LT_Normal int = 0
+	LT_Noop   int = 1
 )

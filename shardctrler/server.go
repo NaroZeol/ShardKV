@@ -66,6 +66,21 @@ type Op struct {
 	Args interface{}
 }
 
+func Op2Bytes(op Op) []byte {
+	buffer := new(bytes.Buffer)
+	encoder := gob.NewEncoder(buffer)
+	encoder.Encode(op)
+	return buffer.Bytes()
+}
+
+func Bytes2Op(data []byte) Op {
+	buffer := bytes.NewBuffer(data)
+	decoder := gob.NewDecoder(buffer)
+	op := Op{}
+	decoder.Decode(&op)
+	return op
+}
+
 type Snapshot struct {
 	Configs    []Config
 	CkSessions map[int64]Session
@@ -122,7 +137,7 @@ func (sc *ShardCtrler) handleNomalRPC(args GenericArgs, reply GenericReply, opTy
 		op.Args = *args.(*QueryArgs)
 	}
 
-	index, _, isLeader := sc.rf.Start(op)
+	index, _, isLeader := sc.rf.Start(Op2Bytes(op))
 	if !isLeader {
 		reply.setWrongLeader(true)
 		DPrintf("[SC-S][%v] failed to Start(), not a leader", sc.me)
@@ -389,7 +404,9 @@ func (sc *ShardCtrler) handleApplyMsg() {
 	for applyMsg := range sc.applyCh {
 		if applyMsg.CommandValid {
 			sc.mu.Lock()
-			op := applyMsg.Command.(Op)
+
+			op := Bytes2Op(applyMsg.Command)
+
 			if sc.lastApplied+1 != applyMsg.CommandIndex {
 				DPrintf("[SC-S][%v] apply out of order", sc.me)
 			}

@@ -43,6 +43,21 @@ type Op struct {
 	Args interface{}
 }
 
+func Op2Bytes(op Op) []byte {
+	buf := new(bytes.Buffer)
+	enc := gob.NewEncoder(buf)
+	enc.Encode(op)
+	return buf.Bytes()
+}
+
+func Bytes2Op(data []byte) Op {
+	buf := bytes.NewBuffer(data)
+	dec := gob.NewDecoder(buf)
+	var op Op
+	dec.Decode(&op)
+	return op
+}
+
 type ShardKV struct {
 	mu       sync.Mutex
 	me       int
@@ -211,7 +226,7 @@ func (kv *ShardKV) handleNormalRPC(args GenericArgs, reply GenericReply, opType 
 		op.Args = *args.(*UpdateShardVecArgs)
 	}
 
-	index, _, isLeader := kv.rf.Start(op)
+	index, _, isLeader := kv.rf.Start(Op2Bytes(op))
 	if !isLeader {
 		reply.setErr(ERR_WrongLeader)
 		DPrintf("[SKV-S][%v][%v] failed to Start(), not a leader", kv.gid, kv.me)
@@ -585,7 +600,9 @@ func (kv *ShardKV) handleApplyMsg() {
 	for applyMsg := range kv.applyCh {
 		if applyMsg.CommandValid {
 			kv.mu.Lock()
-			op := applyMsg.Command.(Op)
+
+			op := Bytes2Op(applyMsg.Command)
+
 			if kv.lastApplied+1 != applyMsg.CommandIndex {
 				DPrintf("[SKV-S][%v][%v] apply out of order", kv.gid, kv.me)
 			}

@@ -40,7 +40,7 @@ import (
 // other uses.
 type ApplyMsg struct {
 	CommandValid bool
-	Command      interface{}
+	Command      []byte
 	CommandIndex int
 
 	// For 3D:
@@ -52,9 +52,9 @@ type ApplyMsg struct {
 
 type logEntry struct {
 	Term    int
-	Type    logType
+	Type    int
 	Index   int
-	Command interface{}
+	Command []byte
 }
 
 // A Go object implementing a single Raft peer.
@@ -611,7 +611,7 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
+func (rf *Raft) Start(command []byte) (int, int, bool) {
 	index := -1
 	term := -1
 	isLeader := true
