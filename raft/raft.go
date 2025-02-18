@@ -57,6 +57,21 @@ type logEntry struct {
 	Command []byte
 }
 
+func EncodeLogEntries(entries []logEntry) []byte {
+	b := new(bytes.Buffer)
+	e := gob.NewEncoder(b)
+	e.Encode(entries)
+	return b.Bytes()
+}
+
+func DecodeLogEntries(b []byte) []logEntry {
+	entries := []logEntry{}
+	r := bytes.NewBuffer(b)
+	d := gob.NewDecoder(r)
+	d.Decode(&entries)
+	return entries
+}
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex              // Lock to protect shared access to this peer's state
@@ -290,7 +305,7 @@ type AppendEntriesArgs struct {
 	LeaderId     int64
 	PrevLogIndex int64
 	PrevLogTerm  int64
-	Entries      []logEntry
+	Entries      []byte
 	LeaderCommit int64
 }
 
@@ -366,8 +381,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if len(args.Entries) != 0 {
-		DPrintf("[%v] receive AppendEntries from [%v] in term %v from #%v to #%v\n", rf.me, args.LeaderId, args.Term, args.Entries[0].Index, args.Entries[len(args.Entries)-1].Index)
+	// decode entries
+	entries := DecodeLogEntries(args.Entries)
+
+	if len(entries) != 0 {
+		DPrintf("[%v] receive AppendEntries from [%v] in term %v from #%v to #%v\n", rf.me, args.LeaderId, args.Term, entries[0].Index, entries[len(entries)-1].Index)
 	} else {
 		DPrintf("[%v] receive heartbeat from [%v] in term %v", rf.me, args.LeaderId, args.Term)
 	}
@@ -423,14 +441,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// Good case
 	if prevLogIndex == args.PrevLogIndex && prevLogTerm == args.PrevLogTerm {
-		rf.log = append(rf.log, args.Entries...)
+		rf.log = append(rf.log, entries...)
 		rf.persist()
 		reply.Success = true
 
 		// set new commit index
 		updateCommitIndex()
 
-		if len(args.Entries) != 0 { // ignore printing heart beat message
+		if len(entries) != 0 { // ignore printing heart beat message
 			DPrintf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
 		}
 		return nil
@@ -440,18 +458,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if prevLogIndex > args.PrevLogIndex && args.PrevLogIndex == rf.lastApplied {
 		// prefix entries check
 		i := (int64)(0)
-		for ; i < (int64)(len(args.Entries)) && rf.localIndex(i+rf.lastApplied+1) < int64(len(rf.log)); i++ {
+		for ; i < (int64)(len(entries)) && rf.localIndex(i+rf.lastApplied+1) < int64(len(rf.log)); i++ {
 			if rf.localIndex(i+rf.lastApplied+1) < 0 {
-				i = int64(len(args.Entries))
+				i = int64(len(entries))
 				log.Println("hit branch")
 				break
 			}
-			if args.Entries[i].Term != rf.log[rf.localIndex(i+rf.lastApplied+1)].Term {
+			if entries[i].Term != rf.log[rf.localIndex(i+rf.lastApplied+1)].Term {
 				i = -1 // not prefix entries, let i = -1 to make condition false
 				break
 			}
 		}
-		if i == (int64(len(args.Entries))) {
+		if i == (int64(len(entries))) {
 			DPrintf("[%v] refuse to use fix package because they are prefix entries", rf.me)
 			DPrintf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
 			reply.Success = true
@@ -459,7 +477,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			return nil
 		}
 
-		rf.log = append(rf.log[:rf.localIndex(rf.lastApplied+1)], args.Entries...) // left-closed and right-open interval for slice
+		rf.log = append(rf.log[:rf.localIndex(rf.lastApplied+1)], entries...) // left-closed and right-open interval for slice
 		rf.persist()
 		reply.Success = true
 
@@ -474,8 +492,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Bad case
 	if prevLogIndex != args.PrevLogIndex || prevLogTerm != args.PrevLogTerm {
 		reply.Success = false
-		if len(args.Entries) != 0 { //ignore printing heart beat message
-			DPrintf("[%v] reject to append entries from #%v to #%v with different index #%v or term %v", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+int64(len(args.Entries)), prevLogIndex, prevLogTerm)
+		if len(entries) != 0 { //ignore printing heart beat message
+			DPrintf("[%v] reject to append entries from #%v to #%v with different index #%v or term %v", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+int64(len(entries)), prevLogIndex, prevLogTerm)
 			DPrintf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
 		}
 		return nil
@@ -882,12 +900,15 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 			realNextIndex = rf.globalLogLen() // leader's last log entry (index start at 1)
 		}
 
+		// Deep copy to avoid data racing in Raft.AppendEntries()
+		entriesBt := EncodeLogEntries(rf.log[rf.localIndex(realNextIndex):])
+
 		args := AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
-			PrevLogIndex: realNextIndex - 1,                                                 // Leader consider this follower's last log index
-			PrevLogTerm:  rf.log[rf.localIndex(realNextIndex-1)].Term,                       // Leader conside this follower's last log term
-			Entries:      append([]logEntry(nil), rf.log[rf.localIndex(realNextIndex):]...), // Deep copy to avoid data racing in Raft.AppendEntries()
+			PrevLogIndex: realNextIndex - 1,                           // Leader consider this follower's last log index
+			PrevLogTerm:  rf.log[rf.localIndex(realNextIndex-1)].Term, // Leader conside this follower's last log term
+			Entries:      entriesBt,
 			LeaderCommit: rf.commitIndex,
 		}
 		reply := AppendEntriesReply{}
