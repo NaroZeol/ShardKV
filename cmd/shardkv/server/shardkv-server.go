@@ -11,6 +11,7 @@ import (
 	"6.5840/cmd/common"
 	"6.5840/raft"
 	"6.5840/shardkv"
+	"google.golang.org/grpc"
 )
 
 type Config = common.Config
@@ -43,15 +44,27 @@ func main() {
 	// servers
 	servers := common.MakeClientEnds(config.Groups[gid].Servers)
 
+	// raft servers
+	raftServers := common.MakeRaftEnds(config.Groups[gid].Servers)
+
 	// controllers
 	ctrlers := common.MakeClientEnds(config.Ctrlers)
 
 	// create persister
 	persister := raft.MakePersister(gid, id)
 
+	// gRPC init
+	raftListener, err := net.Listen("tcp", fmt.Sprintf(":%d", config.Groups[gid].Servers[id].RaftPort))
+	if err != nil {
+		log.Fatal("Listen error:", err)
+	}
+	log.Printf("Raft server %d listening on port %d\n", id, config.Groups[gid].Servers[id].RaftPort)
+	grpcServer := grpc.NewServer()
+
 	// start server
-	sv := shardkv.StartServer(servers, id, persister, maxraftstate, gid, ctrlers, common.MakeEnd)
+	sv := shardkv.StartServer(grpcServer, servers, raftServers, id, persister, maxraftstate, gid, ctrlers, common.MakeEnd)
 	rpc.Register(sv)
+	go grpcServer.Serve(raftListener)
 
 	// wait forever
 	select {}

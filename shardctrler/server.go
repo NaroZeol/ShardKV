@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/gob"
 	"log"
-	"net/rpc"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -12,6 +11,8 @@ import (
 
 	"6.5840/raft"
 	"6.5840/rpcwrapper"
+	raft_grpc "6.5840/rpcwrapper/grpc/raft"
+	"google.golang.org/grpc"
 )
 
 var Debug = true
@@ -497,7 +498,8 @@ func (sc *ShardCtrler) Raft() *raft.Raft {
 // servers that will cooperate via Raft to
 // form the fault-tolerant shardctrler service.
 // me is the index of the current server in servers[].
-func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *ShardCtrler {
+func StartServer(grs *grpc.Server, servers []*rpcwrapper.ClientEnd, raftservers []*rpcwrapper.ClientEnd,
+	me int, persister *raft.Persister, maxraftstate int) *ShardCtrler {
 	gob.Register(Op{})
 	gob.Register(JoinArgs{})
 	gob.Register(LeaveArgs{})
@@ -510,8 +512,8 @@ func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persis
 	sc.persister = persister
 
 	sc.applyCh = make(chan raft.ApplyMsg)
-	sc.rf = raft.Make(servers, (int64)(me), persister, sc.applyCh)
-	rpc.Register(sc.rf)
+	sc.rf = raft.Make(raftservers, (int64)(me), persister, sc.applyCh)
+	raft_grpc.RegisterRaftServer(grs, sc.rf)
 
 	sc.configs = make([]Config, 1)
 	sc.configs[0].Groups = map[int][]string{}

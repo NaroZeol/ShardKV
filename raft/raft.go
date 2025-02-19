@@ -30,6 +30,7 @@ import (
 	"6.5840/rpcwrapper"
 	"6.5840/rpcwrapper/grpc/raft"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -125,6 +126,9 @@ type Raft struct {
 	commitCond  sync.Cond // signal every time matchIndex changes
 	enqueueCond sync.Cond // signal every time commitIndex changes
 	applyCond   sync.Cond // signal every time applyQueue changes
+
+	// clientends
+	peersConns []*grpc.ClientConn
 }
 
 // Convert externalIndex to internalIndex
@@ -560,16 +564,28 @@ func (rf *Raft) InstallSnapshot(ctx context.Context, args *raft_grpc.InstallSnap
 	return reply, nil
 }
 
-func (rf *Raft) sendRequestVote(server int64, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	conn, err := grpc.NewClient(rf.peers[server].GetAddrAndPort(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		DPrintf("[%v] fail to create client to [%v], Err: %v", rf.me, server, err)
-		return false
+func (rf *Raft) GetClientEnd(server int64) raft_grpc.RaftClient {
+	if rf.peersConns[server] == nil {
+		conn, err := grpc.NewClient(rf.peers[server].GetAddrAndPort(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			DPrintf("[%v] fail to create client to [%v], Err: %v", rf.me, server, err)
+			return nil
+		}
+		rf.peersConns[server] = conn
+	} else if rf.peersConns[server].GetState() == connectivity.Shutdown {
+		conn, err := grpc.NewClient(rf.peers[server].GetAddrAndPort(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			DPrintf("[%v] fail to create client to [%v], Err: %v", rf.me, server, err)
+			return nil
+		}
+		rf.peersConns[server] = conn
 	}
+	return raft_grpc.NewRaftClient(rf.peersConns[server])
+}
 
-	client := raft_grpc.NewRaftClient(conn)
+func (rf *Raft) sendRequestVote(server int64, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	client := rf.GetClientEnd(server)
 	if client == nil {
-		DPrintf("[%v] fail to create client to [%v]", rf.me, server)
 		return false
 	}
 
@@ -588,15 +604,8 @@ func (rf *Raft) sendRequestVote(server int64, args *RequestVoteArgs, reply *Requ
 }
 
 func (rf *Raft) sendAppendEntries(server int64, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	conn, err := grpc.NewClient(rf.peers[server].GetAddrAndPort(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		DPrintf("[%v] fail to create client to [%v], Err: %v", rf.me, server, err)
-		return false
-	}
-
-	client := raft_grpc.NewRaftClient(conn)
+	client := rf.GetClientEnd(server)
 	if client == nil {
-		DPrintf("[%v] fail to create client to [%v], Err: %v", rf.me, server, err)
 		return false
 	}
 
@@ -614,15 +623,8 @@ func (rf *Raft) sendAppendEntries(server int64, args *AppendEntriesArgs, reply *
 }
 
 func (rf *Raft) sendInstallSnapshot(server int64, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
-	conn, err := grpc.NewClient(rf.peers[server].GetAddrAndPort(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		DPrintf("[%v] fail to create client to [%v], Err: %v", rf.me, server, err)
-		return false
-	}
-
-	client := raft_grpc.NewRaftClient(conn)
+	client := rf.GetClientEnd(server)
 	if client == nil {
-		DPrintf("[%v] fail to create client to [%v], Err: %v", rf.me, server, err)
 		return false
 	}
 
@@ -1170,6 +1172,8 @@ func Make(peers []*rpcwrapper.ClientEnd, me int64,
 	rf.syncCond = *sync.NewCond(&rf.mu)
 	rf.commitCond = *sync.NewCond(&rf.mu)
 	rf.enqueueCond = *sync.NewCond(&rf.mu)
+
+	rf.peersConns = make([]*grpc.ClientConn, len(peers))
 
 	// initialize from state persisted before a crash
 	rf.snapshot = make([]byte, 0)

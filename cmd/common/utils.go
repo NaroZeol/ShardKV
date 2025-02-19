@@ -36,6 +36,14 @@ func MakeClientEnds(servers []ServerInfo) []*rpcwrapper.ClientEnd {
 	return clientEnds
 }
 
+func MakeRaftEnds(servers []ServerInfo) []*rpcwrapper.ClientEnd {
+	clientEnds := make([]*rpcwrapper.ClientEnd, len(servers))
+	for i, server := range servers {
+		clientEnds[i] = rpcwrapper.MakeClient(server.RaftHost, server.RaftPort)
+	}
+	return clientEnds
+}
+
 func MakeEnd(name string) (clientend *rpcwrapper.ClientEnd, err error) {
 	fileds := strings.Split(name, ":")
 

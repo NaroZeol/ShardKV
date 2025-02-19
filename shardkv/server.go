@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/gob"
 	"log"
-	"net/rpc"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -12,7 +11,9 @@ import (
 
 	"6.5840/raft"
 	"6.5840/rpcwrapper"
+	"6.5840/rpcwrapper/grpc/raft"
 	"6.5840/shardctrler"
+	"google.golang.org/grpc"
 )
 
 var Debug = true
@@ -832,7 +833,10 @@ func (kv *ShardKV) killed() bool {
 //
 // StartServer() must return quickly, so it should start goroutines
 // for any long-running work.
-func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, ctrlers []*rpcwrapper.ClientEnd, make_end func(string) (*rpcwrapper.ClientEnd, error)) *ShardKV {
+func StartServer(grs *grpc.Server, servers []*rpcwrapper.ClientEnd, raftservers []*rpcwrapper.ClientEnd,
+	me int, persister *raft.Persister, maxraftstate int, gid int, ctrlers []*rpcwrapper.ClientEnd,
+	make_end func(string) (*rpcwrapper.ClientEnd, error)) *ShardKV {
+
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	gob.Register(Op{})
@@ -853,8 +857,8 @@ func StartServer(servers []*rpcwrapper.ClientEnd, me int, persister *raft.Persis
 
 	kv.persister = persister
 	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, (int64)(me), persister, kv.applyCh)
-	rpc.Register(kv.rf)
+	kv.rf = raft.Make(raftservers, (int64)(me), persister, kv.applyCh)
+	raft_grpc.RegisterRaftServer(grs, kv.rf)
 
 	kv.mp = make(map[string]string)
 	kv.ckSessions = make(map[string]Session)

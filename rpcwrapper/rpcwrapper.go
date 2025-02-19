@@ -2,13 +2,12 @@ package rpcwrapper
 
 import (
 	"fmt"
-
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"net/rpc"
+	"time"
 )
 
 type ClientEnd struct {
-	rc   *grpc.ClientConn
+	rc   *rpc.Client
 	addr string
 	port int
 }
@@ -17,15 +16,48 @@ func MakeClient(addr string, port int) *ClientEnd {
 	return &ClientEnd{nil, addr, port}
 }
 
-func (e *ClientEnd) GetConnection() *grpc.ClientConn {
-	if e.rc == nil {
-		conn, err := grpc.NewClient(fmt.Sprintf("%s:%d", e.addr, e.port), grpc.WithTransportCredentials(insecure.NewCredentials()))
+// send an RPC, wait for the reply.
+// the return value indicates success; false means that
+// no reply was received from the server.
+func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bool {
+	if e.rc == nil { // first time, connect to server, lazy initialization
+		c, err := rpc.DialHTTP("tcp", fmt.Sprintf("%s:%d", e.addr, e.port))
 		if err != nil {
-			return nil
+			// log.Println("Failed to connect to ", e.addr, ":", e.port)
+			// log.Println(err)
+			return false
 		}
-		e.rc = conn
+		// log.Println("Connected to ", e.addr, ":", e.port)
+		e.rc = c
 	}
-	return e.rc
+
+	done := make(chan error, 1)
+	go func() {
+		done <- e.rc.Call(svcMeth, args, reply)
+	}()
+
+	// log.Print("Call ", svcMeth, " to ", e.addr, ":", e.port)
+
+	for {
+		select {
+		case err := <-done:
+			if err != nil { // try to reconnect
+				c, err := rpc.DialHTTP("tcp", fmt.Sprintf("%s:%d", e.addr, e.port))
+				if err != nil { // reconnect failed
+					// log.Println("Failed to reconnect to ", e.addr, ":", e.port)
+					return false
+				}
+				e.rc.Close()
+				e.rc = c
+			} else {
+				// log.Println("Call ", svcMeth, " to ", e.addr, ":", e.port, " succeeded")
+				return true
+			}
+		case <-time.After(100 * time.Millisecond):
+			// log.Println("Call ", svcMeth, " to ", e.addr, ":", e.port, " timed out")
+			return false
+		}
+	}
 }
 
 func (e *ClientEnd) Close() {

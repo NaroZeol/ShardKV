@@ -1,9 +1,11 @@
 package common
 
 type ServerInfo struct {
-	Id   int    `json:"id"`
-	Host string `json:"host"`
-	Port int    `json:"port"`
+	Id       int    `json:"id"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	RaftHost string `json:"raft_host"`
+	RaftPort int    `json:"raft_port"`
 }
 
 type GroupInfo struct {
