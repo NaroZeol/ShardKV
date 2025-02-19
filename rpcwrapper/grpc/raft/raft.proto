@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+option go_package = "6.5840/raft_grpc";
+
+package raft_grpc;
+
+service Raft {
+  rpc AppendEntries(AppendEntriesArgs) returns (AppendEntriesReply) {}
+  rpc RequestVote(RequestVoteArgs) returns (RequestVoteReply) {}
+  rpc InstallSnapshot(InstallSnapshotArgs) returns (InstallSnapshotReply) {}
+}
+
+message AppendEntriesArgs {
+    int64 term = 1;
+    int64 leaderId = 2;
+    int64 prevLogIndex = 3;
+    int64 prevLogTerm = 4;
+    bytes entries = 5;
+    int64 leaderCommit = 6;
+}
+
+message AppendEntriesReply {
+    int64 term = 1;
+    bool success = 2;
+    int64 prevLogIndex = 3;
+    int64 prevLogTerm = 4;
+    int64 lastApplied = 5;
+}
+
+message RequestVoteArgs {
+    int64 term = 1;
+    int64 candidateId = 2;
+    int64 lastLogIndex = 3;
+    int64 lastLogTerm = 4;
+}
+
+message RequestVoteReply {
+    int64 term = 1;
+    bool voteGranted = 2;
+}
+
+message InstallSnapshotArgs {
+    int64 term = 1;
+    int64 leaderId = 2;
+    int64 lastIncludedInternal = 3;
+    int64 lastIncludedIndex = 4;
+    int64 lastIncludedTerm = 5;
+    bytes data = 6;
+}
+
+message InstallSnapshotReply {
+    int64 term = 1;
+}

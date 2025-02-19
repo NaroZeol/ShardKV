@@ -14,3 +14,5 @@ src/cmd/shardkv/client/shardkv-client
 
 *.dat
 *.log
+
+*.pb.go

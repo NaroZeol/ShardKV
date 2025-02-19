@@ -19,6 +19,7 @@ package raft
 
 import (
 	"bytes"
+	"context"
 	"encoding/gob"
 	"log"
 	"math/rand"
@@ -27,7 +28,17 @@ import (
 	"time"
 
 	"6.5840/rpcwrapper"
+	"6.5840/rpcwrapper/grpc/raft"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
+
+type AppendEntriesArgs raft_grpc.AppendEntriesArgs
+type AppendEntriesReply raft_grpc.AppendEntriesReply
+type RequestVoteArgs raft_grpc.RequestVoteArgs
+type RequestVoteReply raft_grpc.RequestVoteReply
+type InstallSnapshotArgs raft_grpc.InstallSnapshotArgs
+type InstallSnapshotReply raft_grpc.InstallSnapshotReply
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -74,6 +85,8 @@ func DecodeLogEntries(b []byte) []logEntry {
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
+	raft_grpc.UnimplementedRaftServer
+
 	mu        sync.Mutex              // Lock to protect shared access to this peer's state
 	peers     []*rpcwrapper.ClientEnd // RPC end points of all peers
 	persister *Persister              // Object to hold this peer's persisted state
@@ -288,53 +301,18 @@ func (rf *Raft) Snapshot(index int64, snapshot []byte) {
 	DPrintf("[%v] create snapshot from #%v to #%v (external #%v to #%v) successfully", rf.me, rf.log[0].Index, prevIndex, prevSnapshotIndex, index)
 }
 
-type RequestVoteArgs struct {
-	Term         int64
-	CandiateId   int64
-	LastLogIndex int64
-	LastLogTerm  int64
-}
-
-type RequestVoteReply struct {
-	Term        int64
-	VoteGranted bool
-}
-
-type AppendEntriesArgs struct {
-	Term         int64
-	LeaderId     int64
-	PrevLogIndex int64
-	PrevLogTerm  int64
-	Entries      []byte
-	LeaderCommit int64
-}
-
-type AppendEntriesReply struct {
-	Term         int64
-	Success      bool
-	PrevLogIndex int64
-	PrevLogTerm  int64
-	LastApplied  int64
-}
-
-type InstallSnapshotArgs struct {
-	Term                 int64
-	LeaderId             int64
-	LastIncludedInternal int64
-	LastIncludedIndex    int64
-	LastIncludedTerm     int64
-	Data                 []byte
-}
-
-type InstallSnapshotReply struct {
-	Term int64
-}
-
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) error {
+func (rf *Raft) RequestVote(ctx context.Context, args *raft_grpc.RequestVoteArgs) (*raft_grpc.RequestVoteReply, error) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	DPrintf("[%v] receive RequestVote from [%v] in term %v\n", rf.me, args.CandiateId, args.Term)
+	deadline, _ := ctx.Deadline()
+	avaTime := time.Until(deadline)
+	log.Printf("[%v] RequestVote start, left %v", rf.me, avaTime)
+	defer log.Printf("[%v] RequestVote done, left %v", rf.me, time.Until(deadline))
+
+	DPrintf("[%v] receive RequestVote from [%v] in term %v\n", rf.me, args.CandidateId, args.Term)
+
+	reply := &raft_grpc.RequestVoteReply{}
 
 	// default return
 	reply.Term = rf.currentTerm
@@ -344,8 +322,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) erro
 	lastLogTerm := rf.log[len(rf.log)-1].Term
 
 	if args.Term < rf.currentTerm {
-		DPrintf("[%v] refuse to vote for [%v] in term %v because of more up-to-date entry %v\n", rf.me, args.CandiateId, args.Term, rf.currentTerm)
-		return nil
+		DPrintf("[%v] refuse to vote for [%v] in term %v because of more up-to-date entry %v\n", rf.me, args.CandidateId, args.Term, rf.currentTerm)
+		return reply, nil
 	} else if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = nil
@@ -357,29 +335,36 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) erro
 
 	isUpToDate := (args.LastLogTerm > lastLogTerm) || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex)
 	if !isUpToDate {
-		DPrintf("[%v] refuse to vote for [%v] in term %v because of more up-to-date log entry\n", rf.me, args.CandiateId, args.Term)
-	} else if rf.votedFor != nil && *rf.votedFor != args.CandiateId {
-		DPrintf("[%v] refuse to vote for [%v] in term %v because it has voted for [%v]", rf.me, args.CandiateId, args.Term, *rf.votedFor)
-	} else if (rf.votedFor == nil || *rf.votedFor == args.CandiateId) && isUpToDate {
+		DPrintf("[%v] refuse to vote for [%v] in term %v because of more up-to-date log entry\n", rf.me, args.CandidateId, args.Term)
+	} else if rf.votedFor != nil && *rf.votedFor != args.CandidateId {
+		DPrintf("[%v] refuse to vote for [%v] in term %v because it has voted for [%v]", rf.me, args.CandidateId, args.Term, *rf.votedFor)
+	} else if (rf.votedFor == nil || *rf.votedFor == args.CandidateId) && isUpToDate {
 		rf.currentTerm = args.Term
-		rf.votedFor = &args.CandiateId
+		rf.votedFor = &args.CandidateId
 		rf.lastHeartBeat = time.Now() // According to the paper, heart beat time should reset when voting to somebody
 		rf.state = RS_Follower
 		rf.persist()
 
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = true
-		DPrintf("[%v] vote for [%v] in term %v\n", rf.me, args.CandiateId, args.Term)
-		return nil
+		DPrintf("[%v] vote for [%v] in term %v\n", rf.me, args.CandidateId, args.Term)
+		return reply, nil
 	} else {
 		log.Fatalf("[%v] reach unreachable in Raft.RequestVote\n", rf.me)
 	}
-	return nil
+	return reply, nil
 }
 
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) error {
+func (rf *Raft) AppendEntries(ctx context.Context, args *raft_grpc.AppendEntriesArgs) (*raft_grpc.AppendEntriesReply, error) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
+	deadline, _ := ctx.Deadline()
+	avaTime := time.Until(deadline)
+	log.Printf("[%v] AppendEntries start, left %v", rf.me, avaTime)
+	defer log.Printf("[%v] AppendEntries done, left %v", rf.me, time.Until(deadline))
+
+	reply := &raft_grpc.AppendEntriesReply{}
 
 	// decode entries
 	entries := DecodeLogEntries(args.Entries)
@@ -411,19 +396,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		DPrintf("[%v] refuce to accept AppendEntries from [%v] in term %v because of higher term %v", rf.me, args.LeaderId, args.Term, rf.currentTerm)
-		return nil
+		return reply, nil
 	}
 
 	updateCommitIndex := func() {
 		if rf.commitIndex < args.LeaderCommit {
-			min := (int64)(0)
-			if args.LeaderCommit < rf.globalLogLen()-1 {
-				min = args.LeaderCommit
-			} else {
-				min = rf.globalLogLen() - 1
-			}
-
-			rf.commitIndex = min
+			rf.commitIndex = min(args.LeaderCommit, rf.globalLogLen()-1)
 			rf.enqueueCond.Signal()
 		} else {
 			rf.commitCond.Signal()
@@ -451,7 +429,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if len(entries) != 0 { // ignore printing heart beat message
 			DPrintf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
 		}
-		return nil
+		return reply, nil
 	}
 
 	// fix package from leader
@@ -474,7 +452,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			DPrintf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
 			reply.Success = true
 			updateCommitIndex()
-			return nil
+			return reply, nil
 		}
 
 		rf.log = append(rf.log[:rf.localIndex(rf.lastApplied+1)], entries...) // left-closed and right-open interval for slice
@@ -486,7 +464,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		DPrintf("[%v] receive a fix package from [%v]", rf.me, args.LeaderId)
 		DPrintf("[%v] append entries from #%v to #%v", rf.me, args.PrevLogIndex+1, rf.globalLogLen()-1)
-		return nil
+		return reply, nil
 	}
 
 	// Bad case
@@ -496,37 +474,43 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			DPrintf("[%v] reject to append entries from #%v to #%v with different index #%v or term %v", rf.me, args.PrevLogIndex+1, args.PrevLogIndex+int64(len(entries)), prevLogIndex, prevLogTerm)
 			DPrintf("[%v] lastApplied: #%v prevLogIndex: #%v prevLogTerm: %v commitIndex: #%v", rf.me, reply.LastApplied, reply.PrevLogIndex, reply.PrevLogTerm, rf.commitIndex)
 		}
-		return nil
+		return reply, nil
 	}
 
 	// unreachable, for debug
-	DPrintf("args: %+v", *args)
+	DPrintf("args: %+v", args)
 	DPrintf("prevLogIndex: %+v, prevLogTerm: %+v, lastApplied: %+v", prevLogIndex, prevLogTerm, lastApplied)
 	log.Fatalf("[%v] reach unreachable in Raft.AppendEntries", rf.me)
-	return nil
+	return nil, nil
 }
 
-func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) error {
+func (rf *Raft) InstallSnapshot(ctx context.Context, args *raft_grpc.InstallSnapshotArgs) (*raft_grpc.InstallSnapshotReply, error) {
 	rf.mu.Lock()
 	DPrintf("[%v] receive InstallSnapshot from [%v]", rf.me, args.LeaderId)
 
+	deadline, _ := ctx.Deadline()
+	avaTime := time.Until(deadline)
+	log.Printf("[%v] InstallSnapshot start, left %v", rf.me, avaTime)
+	defer log.Printf("[%v] InstallSnapshot done, left %v", rf.me, time.Until(deadline))
+
+	reply := &raft_grpc.InstallSnapshotReply{}
 	reply.Term = rf.currentTerm
 
 	// check before install
 	if args.Term < rf.currentTerm {
 		DPrintf("[%v] refuse to install snapshot because of higher term", rf.me)
 		rf.mu.Unlock()
-		return nil
+		return reply, nil
 	}
 	if args.LastIncludedIndex < rf.snapshotIndex {
 		DPrintf("[%v] refuse to install snapshot because of more up-to-date snapshot", rf.me)
 		rf.mu.Unlock()
-		return nil
+		return reply, nil
 	}
 	if args.LastIncludedIndex == rf.snapshotIndex {
 		DPrintf("[%v] refuce to install snapshot because of same up-to-date snapshot", rf.me)
 		rf.mu.Unlock()
-		return nil
+		return reply, nil
 	}
 
 	// Figure 13 step 6
@@ -573,49 +557,86 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.mu.Unlock()
 
 	DPrintf("[%v] install snapshot up to #%v (external index #%v) successfully!", rf.me, args.LastIncludedInternal, args.LastIncludedIndex)
-	return nil
+	return reply, nil
 }
 
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
 func (rf *Raft) sendRequestVote(server int64, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
+	conn, err := grpc.NewClient(rf.peers[server].GetAddrAndPort(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		DPrintf("[%v] fail to create client to [%v], Err: %v", rf.me, server, err)
+		return false
+	}
+
+	client := raft_grpc.NewRaftClient(conn)
+	if client == nil {
+		DPrintf("[%v] fail to create client to [%v]", rf.me, server)
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), TM_RPCTimeout)
+	defer cancel()
+
+	rep, err := client.RequestVote(ctx, (*raft_grpc.RequestVoteArgs)(args))
+	if err != nil {
+		DPrintf("[%v] fail to send RequestVote to [%v](%v), %v", rf.me, server, rf.peers[server].GetAddrAndPort(), err)
+		return false
+	}
+
+	*reply = *(*RequestVoteReply)(rep)
+
+	return true
 }
 
 func (rf *Raft) sendAppendEntries(server int64, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
+	conn, err := grpc.NewClient(rf.peers[server].GetAddrAndPort(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		DPrintf("[%v] fail to create client to [%v], Err: %v", rf.me, server, err)
+		return false
+	}
+
+	client := raft_grpc.NewRaftClient(conn)
+	if client == nil {
+		DPrintf("[%v] fail to create client to [%v], Err: %v", rf.me, server, err)
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), TM_RPCTimeout)
+	defer cancel()
+
+	rep, err := client.AppendEntries(ctx, (*raft_grpc.AppendEntriesArgs)(args))
+	if err != nil {
+		DPrintf("[%v] fail to send AppendEntries to [%v], %v", rf.me, server, err)
+		return false
+	}
+
+	*reply = *(*AppendEntriesReply)(rep)
+	return true
 }
 
 func (rf *Raft) sendInstallSnapshot(server int64, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
-	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
-	return ok
+	conn, err := grpc.NewClient(rf.peers[server].GetAddrAndPort(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		DPrintf("[%v] fail to create client to [%v], Err: %v", rf.me, server, err)
+		return false
+	}
+
+	client := raft_grpc.NewRaftClient(conn)
+	if client == nil {
+		DPrintf("[%v] fail to create client to [%v], Err: %v", rf.me, server, err)
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), TM_RPCTimeout)
+	defer cancel()
+
+	rep, err := client.InstallSnapshot(ctx, (*raft_grpc.InstallSnapshotArgs)(args))
+	if err != nil {
+		DPrintf("[%v] fail to send InstallSnapshot to [%v], %v", rf.me, server, err)
+		return false
+	}
+
+	*reply = *(*InstallSnapshotReply)(rep)
+	return true
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -736,7 +757,7 @@ func (rf *Raft) election(cancelToken *int32) {
 	ballotCount := int32(1)
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
-		CandiateId:   rf.me,
+		CandidateId:  rf.me,
 		LastLogIndex: rf.globalLogLen(),
 		LastLogTerm:  rf.log[len(rf.log)-1].Term,
 	}
@@ -948,6 +969,9 @@ func (rf *Raft) handleFailedReply(server int64, args *AppendEntriesArgs, reply *
 	// Case 0: higher term, turn to follower
 	if rf.currentTerm < reply.Term {
 		atomic.StoreInt32(cancelToken, 1) // Cancel proactively to avoid a rare competitive situation
+		rf.currentTerm = max(rf.currentTerm, reply.Term)
+		rf.state = RS_Follower
+
 		DPrintf("[%v] get a reply from higher term %v, cancel leader tasks\n", rf.me, reply.Term)
 		rf.mu.Unlock()
 		return
@@ -1152,7 +1176,7 @@ func Make(peers []*rpcwrapper.ClientEnd, me int64,
 
 	rf.mu.Lock()
 	rf.readPersist(persister.ReadRaftState())
-	DPrintf("[%v] start in Term %v", rf.me, rf.currentTerm)
+	DPrintf("[%v] start in Term %v, on %v", rf.me, rf.currentTerm, rf.peers[rf.me].GetAddrAndPort())
 
 	go func() { // start server, use goroutine to fast return
 		if len(rf.snapshot) != 0 {

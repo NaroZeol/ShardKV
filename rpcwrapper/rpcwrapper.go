@@ -2,12 +2,13 @@ package rpcwrapper
 
 import (
 	"fmt"
-	"net/rpc"
-	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type ClientEnd struct {
-	rc   *rpc.Client
+	rc   *grpc.ClientConn
 	addr string
 	port int
 }
@@ -16,52 +17,23 @@ func MakeClient(addr string, port int) *ClientEnd {
 	return &ClientEnd{nil, addr, port}
 }
 
-// send an RPC, wait for the reply.
-// the return value indicates success; false means that
-// no reply was received from the server.
-func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bool {
-	if e.rc == nil { // first time, connect to server, lazy initialization
-		c, err := rpc.DialHTTP("tcp", fmt.Sprintf("%s:%d", e.addr, e.port))
+func (e *ClientEnd) GetConnection() *grpc.ClientConn {
+	if e.rc == nil {
+		conn, err := grpc.NewClient(fmt.Sprintf("%s:%d", e.addr, e.port), grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
-			// log.Println("Failed to connect to ", e.addr, ":", e.port)
-			// log.Println(err)
-			return false
+			return nil
 		}
-		// log.Println("Connected to ", e.addr, ":", e.port)
-		e.rc = c
+		e.rc = conn
 	}
-
-	done := make(chan error, 1)
-	go func() {
-		done <- e.rc.Call(svcMeth, args, reply)
-	}()
-
-	// log.Print("Call ", svcMeth, " to ", e.addr, ":", e.port)
-
-	for {
-		select {
-		case err := <-done:
-			if err != nil { // try to reconnect
-				c, err := rpc.DialHTTP("tcp", fmt.Sprintf("%s:%d", e.addr, e.port))
-				if err != nil { // reconnect failed
-					// log.Println("Failed to reconnect to ", e.addr, ":", e.port)
-					return false
-				}
-				e.rc.Close()
-				e.rc = c
-			} else {
-				// log.Println("Call ", svcMeth, " to ", e.addr, ":", e.port, " succeeded")
-				return true
-			}
-		case <-time.After(100 * time.Millisecond):
-			// log.Println("Call ", svcMeth, " to ", e.addr, ":", e.port, " timed out")
-			return false
-		}
-	}
+	return e.rc
 }
 
 func (e *ClientEnd) Close() {
 	if e.rc != nil {
 		e.rc.Close()
 	}
+}
+
+func (e *ClientEnd) GetAddrAndPort() string {
+	return fmt.Sprintf("%s:%d", e.addr, e.port)
 }
