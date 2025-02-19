@@ -11,29 +11,38 @@ CTRLER_SERVER_SRC = cmd/ctrler/server/ctrler-server.go cmd/common/*  shardctrler
 SHARDKV_CLIENT_SRC = cmd/shardkv/client/shardkv-client.go cmd/common/* shardctrler/* shardkv/*
 SHARDKV_SERVER_SRC = cmd/shardkv/server/shardkv-server.go cmd/common/* shardkv/* raft/*
 
+GRPC_INPUT = rpcwrapper/grpc/raft/raft.proto
+GRPC_OUTPUT = rpcwrapper/grpc/raft/raft.pb.go rpcwrapper/grpc/raft/raft_grpc.pb.go
+
 all: $(CTRLER_CLIENT_BIN) $(CTRLER_SERVER_BIN) $(SHARDKV_CLIENT_BIN) $(SHARDKV_SERVER_BIN)
 
-$(CTRLER_CLIENT_BIN): $(CTRLER_CLIENT_SRC)
+$(CTRLER_CLIENT_BIN): $(CTRLER_CLIENT_SRC) $(GRPC_OUTPUT)
 	@echo "\033[1;32mBuilding ctrler-client...\033[0m"
 	@mkdir -p $(dir $@)
 	$(GO) build -o $@ $<
 
-$(CTRLER_SERVER_BIN): $(CTRLER_SERVER_SRC)
+$(CTRLER_SERVER_BIN): $(CTRLER_SERVER_SRC) $(GRPC_OUTPUT)
 	@echo "\033[1;32mBuilding ctrler-server...\033[0m"
 	@mkdir -p $(dir $@)
 	$(GO) build -o $@ $<
 
-$(SHARDKV_CLIENT_BIN): $(SHARDKV_CLIENT_SRC)
+$(SHARDKV_CLIENT_BIN): $(SHARDKV_CLIENT_SRC) $(GRPC_OUTPUT)
 	@echo "\033[1;32mBuilding shardkv-client...\033[0m"
 	@mkdir -p $(dir $@)
 	$(GO) build -o $@ $<
 
-$(SHARDKV_SERVER_BIN): $(SHARDKV_SERVER_SRC)
+$(SHARDKV_SERVER_BIN): $(SHARDKV_SERVER_SRC) $(GRPC_OUTPUT)
 	@echo "\033[1;32mBuilding shardkv-server...\033[0m"
 	@mkdir -p $(dir $@)
 	$(GO) build -o $@ $<
 
-tmux: $(CTRLER_CLIENT_BIN) $(CTRLER_SERVER_BIN) $(SHARDKV_CLIENT_BIN) $(SHARDKV_SERVER_BIN)
+$(GRPC_OUTPUT): $(GRPC_INPUT)
+	@echo "\033[1;32mGenerating gRPC code...\033[0m"
+	protoc --go_out=. --go_opt=paths=source_relative \
+    --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+    rpcwrapper/grpc/raft/raft.proto
+
+tmux: $(CTRLER_CLIENT_BIN) $(CTRLER_SERVER_BIN) $(SHARDKV_CLIENT_BIN) $(SHARDKV_SERVER_BIN) $(GRPC_OUTPUT)
 	./tmux-test.sh
 
 clean:
