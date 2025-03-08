@@ -981,7 +981,7 @@ func (rf *Raft) handleFailedReply(server int64, args *AppendEntriesArgs, reply *
 
 	// Case 1: same prevLogTerm, lower prevLogIndex
 	// Case 2: different prevLogIndex, Leader has same prevLogTerm at prevLogIndex
-	if rf.localIndex(reply.PrevLogIndex+1) > 0 &&
+	if rf.localIndex(reply.PrevLogIndex) >= 0 &&
 		(reply.PrevLogTerm == args.PrevLogTerm && reply.PrevLogIndex < args.PrevLogIndex ||
 			reply.PrevLogIndex != args.PrevLogIndex && reply.PrevLogIndex < rf.globalLogLen() && reply.PrevLogTerm == rf.log[rf.localIndex(reply.PrevLogIndex)].Term) {
 
@@ -1003,7 +1003,7 @@ func (rf *Raft) handleFailedReply(server int64, args *AppendEntriesArgs, reply *
 	// S1: 2 2 3 3
 	// S2: 2 2 3
 	// when S1 send #4 to S0
-	if rf.localIndex(reply.LastApplied+1) >= 0 && rf.localIndex(reply.PrevLogIndex) >= 0 &&
+	if rf.localIndex(reply.LastApplied) >= 0 && rf.localIndex(reply.PrevLogIndex) >= 0 &&
 		(reply.PrevLogIndex >= args.PrevLogIndex || reply.PrevLogIndex >= rf.globalLogLen() || // check first to avoid rf.log[rf.localIndex(reply.PrevLogIndex)] out of range
 			(reply.PrevLogIndex < args.PrevLogIndex && reply.PrevLogTerm != rf.log[rf.localIndex(reply.PrevLogIndex)].Term)) {
 		rf.nextIndex[server] = reply.LastApplied + 1
@@ -1013,7 +1013,7 @@ func (rf *Raft) handleFailedReply(server int64, args *AppendEntriesArgs, reply *
 	}
 
 	// Case 5: entries which are needed to send to servers are only existed in snapshot
-	if rf.localIndex(reply.PrevLogIndex+1) < 0 || rf.localIndex(reply.LastApplied+1) < 0 || rf.localIndex(reply.PrevLogIndex) < 0 {
+	if rf.localIndex(reply.PrevLogIndex) < 0 || rf.localIndex(reply.LastApplied) < 0 || rf.localIndex(reply.PrevLogIndex) < 0 {
 		snapshotArgs := InstallSnapshotArgs{
 			Term:                 rf.currentTerm,
 			LeaderId:             rf.me,
