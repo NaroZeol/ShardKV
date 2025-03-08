@@ -309,11 +309,6 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raft_grpc.RequestVoteArgs
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	deadline, _ := ctx.Deadline()
-	avaTime := time.Until(deadline)
-	log.Printf("[%v] RequestVote start, left %v", rf.me, avaTime)
-	defer log.Printf("[%v] RequestVote done, left %v", rf.me, time.Until(deadline))
-
 	DPrintf("[%v] receive RequestVote from [%v] in term %v\n", rf.me, args.CandidateId, args.Term)
 
 	reply := &raft_grpc.RequestVoteReply{}
@@ -362,11 +357,6 @@ func (rf *Raft) RequestVote(ctx context.Context, args *raft_grpc.RequestVoteArgs
 func (rf *Raft) AppendEntries(ctx context.Context, args *raft_grpc.AppendEntriesArgs) (*raft_grpc.AppendEntriesReply, error) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	deadline, _ := ctx.Deadline()
-	avaTime := time.Until(deadline)
-	log.Printf("[%v] AppendEntries start, left %v", rf.me, avaTime)
-	defer log.Printf("[%v] AppendEntries done, left %v", rf.me, time.Until(deadline))
 
 	reply := &raft_grpc.AppendEntriesReply{}
 
@@ -491,11 +481,6 @@ func (rf *Raft) AppendEntries(ctx context.Context, args *raft_grpc.AppendEntries
 func (rf *Raft) InstallSnapshot(ctx context.Context, args *raft_grpc.InstallSnapshotArgs) (*raft_grpc.InstallSnapshotReply, error) {
 	rf.mu.Lock()
 	DPrintf("[%v] receive InstallSnapshot from [%v]", rf.me, args.LeaderId)
-
-	deadline, _ := ctx.Deadline()
-	avaTime := time.Until(deadline)
-	log.Printf("[%v] InstallSnapshot start, left %v", rf.me, avaTime)
-	defer log.Printf("[%v] InstallSnapshot done, left %v", rf.me, time.Until(deadline))
 
 	reply := &raft_grpc.InstallSnapshotReply{}
 	reply.Term = rf.currentTerm
