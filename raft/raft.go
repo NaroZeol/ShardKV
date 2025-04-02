@@ -396,9 +396,10 @@ func (rf *Raft) AppendEntries(ctx context.Context, args *raft_grpc.AppendEntries
 	updateCommitIndex := func() {
 		if rf.commitIndex < args.LeaderCommit {
 			rf.commitIndex = min(args.LeaderCommit, rf.globalLogLen()-1)
+			DPrintf("[%v] update commitIndex to %v", rf.me, rf.commitIndex)
 			rf.enqueueCond.Signal()
 		} else {
-			rf.commitCond.Signal()
+			rf.enqueueCond.Signal()
 		}
 	}
 
