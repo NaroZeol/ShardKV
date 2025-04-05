@@ -866,14 +866,16 @@ func (rf *Raft) applyEntries() {
 		for {
 			i := rf.lastApplied + 1
 			if i <= rf.commitIndex && i < rf.globalLogLen() && rf.localIndex(i) > 0 && rf.log[rf.localIndex(i)].Type == LT_Normal {
-				rf.applyQueue.Enqueue(ApplyMsg{
+				msg := ApplyMsg{
 					CommandValid:  true,
 					Command:       rf.log[rf.localIndex(i)].Command,
 					CommandIndex:  rf.externalIndex(i),
 					SnapshotValid: false,
-				})
+				}
+				rf.applyQueue.Enqueue(msg)
+				DPrintf("[%v] enqueue entry #%v to apply queue", rf.me, msg.CommandIndex)
+
 				rf.lastApplied = i
-				rf.applyCond.Signal()
 			} else if i <= rf.commitIndex && i < rf.globalLogLen() && rf.localIndex(i) > 0 && rf.log[rf.localIndex(i)].Type == LT_Noop {
 				rf.lastApplied = i
 			} else {
@@ -881,6 +883,9 @@ func (rf *Raft) applyEntries() {
 			}
 		}
 		rf.mu.Unlock()
+
+		// always signal applyCond after enqueueCond
+		rf.applyCond.Signal()
 	}
 	DPrintf("[%v] stop applyEntries because of death", rf.me)
 }
@@ -1078,9 +1083,11 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 				DPrintf("[%v] committed #%v (external #%v)", rf.me, newCommitIndex, rf.externalIndex(newCommitIndex))
 			}
 			rf.commitIndex = newCommitIndex
-			rf.enqueueCond.Signal()
 		}
 		rf.mu.Unlock()
+
+		// always signal applyCond after commitCond
+		rf.enqueueCond.Signal()
 	}
 }
 
