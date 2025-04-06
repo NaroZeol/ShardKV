@@ -63,10 +63,11 @@ type ApplyMsg struct {
 }
 
 type logEntry struct {
-	Term    int64
-	Type    int64
-	Index   int64
-	Command []byte
+	Term          int64
+	Type          int64
+	InternalIndex int64
+	ExternalIndex int64
+	Command       []byte
 }
 
 func EncodeLogEntries(entries []logEntry) []byte {
@@ -131,53 +132,16 @@ type Raft struct {
 	peersConns []*grpc.ClientConn
 }
 
-// Convert externalIndex to internalIndex
-//
-// externalIndex:
-// the index upper application send to raft
-// and the index raft send to upper applicaion
-//
-// internalIndex:
-// the global index raft using inside raft's inner function
-func (rf *Raft) internalIndex(externalIndex int64) int64 {
-	index := (int64)(0)
-	cnt := (int64)(0)
-	target := externalIndex - rf.snapshotIndex
-	for i := range rf.log {
-		i := int64(i)
-		index = i
-		if rf.log[i].Type != LT_Noop {
-			cnt += 1
-		}
-		if cnt == target {
-			break
-		}
-	}
-	return rf.globalIndex(index)
-}
-
-// Convert internalIndex to externalIndex
-func (rf *Raft) externalIndex(internalIndex int64) int64 {
-	index := (int64)(0)
-	tartget := internalIndex - rf.log[0].Index
-	for i := (int64)(1); i <= tartget; i++ {
-		if rf.log[i].Type != LT_Noop {
-			index += 1
-		}
-	}
-	return index + rf.snapshotIndex
-}
-
 func (rf *Raft) localIndex(globalIndex int64) int64 {
-	return globalIndex - rf.log[0].Index
+	return globalIndex - rf.log[0].InternalIndex
 }
 
 func (rf *Raft) globalIndex(localIndex int64) int64 {
-	return localIndex + rf.log[0].Index
+	return localIndex + rf.log[0].InternalIndex
 }
 
 func (rf *Raft) globalLogLen() int64 {
-	return int64(len(rf.log)) + rf.log[0].Index
+	return int64(len(rf.log)) + rf.log[0].InternalIndex
 }
 
 // return currentTerm and whether this server
@@ -266,7 +230,7 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.snapshotIndex = _snapshotIndex
 	rf.snapshotTerm = _snapshotTerm
 
-	rf.lastApplied = rf.log[0].Index
+	rf.lastApplied = rf.log[0].InternalIndex
 	DPrintf("[%v] readPersist succeed, restart in Term %v as state %v", rf.me, rf.currentTerm, rf.state)
 }
 
@@ -278,8 +242,20 @@ func (rf *Raft) Snapshot(index int64, snapshot []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	// Convert external index to internal index
+	var prevIndex int64
+	target := index - rf.snapshotIndex // index and rf.snapshotIndex are both external index
+	for i, entry := range rf.log {
+		i := int64(i)
+		if entry.Type != LT_Noop {
+			target--
+		}
+		if target == 0 {
+			prevIndex = rf.globalIndex(i) // internal index
+			break
+		}
+	}
 	prevSnapshotIndex := rf.snapshotIndex
-	prevIndex := rf.internalIndex(index)
 
 	if prevSnapshotIndex >= index {
 		DPrintf("[%v] refuse to make snapshot because of more up-to-date snapshotindex", rf.me)
@@ -291,7 +267,7 @@ func (rf *Raft) Snapshot(index int64, snapshot []byte) {
 		return
 	}
 
-	DPrintf("[%v] try to create snapshot from #%v to #%v (external #%v to #%v)", rf.me, rf.log[0].Index, prevIndex, prevSnapshotIndex, index)
+	DPrintf("[%v] try to create snapshot from #%v to #%v (external #%v to #%v)", rf.me, rf.log[0].InternalIndex, prevIndex, prevSnapshotIndex, index)
 	rf.log = rf.log[rf.localIndex(prevIndex):]
 	rf.snapshot = snapshot
 	rf.snapshotIndex = index
@@ -302,7 +278,7 @@ func (rf *Raft) Snapshot(index int64, snapshot []byte) {
 
 	// rf.lastApplied = prevIndex
 	// rf.commitIndex = prevIndex
-	DPrintf("[%v] create snapshot from #%v to #%v (external #%v to #%v) successfully", rf.me, rf.log[0].Index, prevIndex, prevSnapshotIndex, index)
+	DPrintf("[%v] create snapshot from #%v to #%v (external #%v to #%v) successfully", rf.me, rf.log[0].InternalIndex, prevIndex, prevSnapshotIndex, index)
 }
 
 func (rf *Raft) RequestVote(ctx context.Context, args *raft_grpc.RequestVoteArgs) (*raft_grpc.RequestVoteReply, error) {
@@ -364,7 +340,7 @@ func (rf *Raft) AppendEntries(ctx context.Context, args *raft_grpc.AppendEntries
 	entries := DecodeLogEntries(args.Entries)
 
 	if len(entries) != 0 {
-		DPrintf("[%v] receive AppendEntries from [%v] in term %v from #%v to #%v\n", rf.me, args.LeaderId, args.Term, entries[0].Index, entries[len(entries)-1].Index)
+		DPrintf("[%v] receive AppendEntries from [%v] in term %v from #%v to #%v\n", rf.me, args.LeaderId, args.Term, entries[0].InternalIndex, entries[len(entries)-1].InternalIndex)
 	} else {
 		DPrintf("[%v] receive heartbeat from [%v] in term %v", rf.me, args.LeaderId, args.Term)
 	}
@@ -511,15 +487,17 @@ func (rf *Raft) InstallSnapshot(ctx context.Context, args *raft_grpc.InstallSnap
 		rf.log[0].Type = LT_Noop
 		rf.log[0].Term = args.LastIncludedTerm
 		rf.log[0].Command = nil
-		rf.log[0].Index = args.LastIncludedInternal
+		rf.log[0].InternalIndex = args.LastIncludedInternal
+		rf.log[0].ExternalIndex = args.LastIncludedIndex
 	} else {
 		rf.log = make([]logEntry, 0)
 		// a fill entry to let rf.log start from index 1
 		rf.log = append(rf.log, logEntry{
-			Index:   args.LastIncludedInternal,
-			Term:    args.LastIncludedTerm,
-			Type:    LT_Noop,
-			Command: nil,
+			InternalIndex: args.LastIncludedInternal,
+			ExternalIndex: args.LastIncludedIndex,
+			Term:          args.LastIncludedTerm,
+			Type:          LT_Noop,
+			Command:       nil,
 		})
 	}
 
@@ -529,8 +507,8 @@ func (rf *Raft) InstallSnapshot(ctx context.Context, args *raft_grpc.InstallSnap
 	rf.snapshotTerm = args.LastIncludedTerm
 	rf.persist()
 
-	rf.lastApplied = rf.log[0].Index
-	rf.commitIndex = rf.log[0].Index
+	rf.lastApplied = rf.log[0].InternalIndex
+	rf.commitIndex = rf.log[0].InternalIndex
 	rf.enqueueCond.Signal()
 
 	// reset state machine
@@ -653,23 +631,23 @@ func (rf *Raft) Start(command []byte) (int64, int64, bool) {
 	}
 
 	newLog := logEntry{
-		Index:   rf.globalLogLen(),
-		Term:    rf.currentTerm,
-		Type:    LT_Normal,
-		Command: command,
+		InternalIndex: rf.globalLogLen(),
+		ExternalIndex: rf.log[len(rf.log)-1].ExternalIndex + 1,
+		Term:          rf.currentTerm,
+		Type:          LT_Normal,
+		Command:       command,
 	}
 	rf.log = append(rf.log, newLog)
 	rf.persist()
 	rf.nextIndex[rf.me] = rf.globalLogLen()
 	rf.matchIndex[rf.me] = rf.globalLogLen() - 1
 
-	externIndex := rf.externalIndex(rf.globalLogLen() - 1)
+	externIndex := newLog.ExternalIndex
 	term = rf.currentTerm
 	isLeader = true
-	DPrintf("[%v] leader append entry #%v (external #%v) to its log in term %v", rf.me, newLog.Index, externIndex, term)
-	rf.syncCond.Signal()
-	rf.commitCond.Signal()
+	DPrintf("[%v] leader append entry #%v (external #%v) to its log in term %v", rf.me, newLog.InternalIndex, externIndex, term)
 
+	rf.syncCond.Signal()
 	return externIndex, term, isLeader
 }
 
@@ -818,10 +796,11 @@ func (rf *Raft) election(cancelToken *int32) {
 			// mit a blank no-op entry into the log at the
 			// start of its term."
 			newLog := logEntry{
-				Index:   rf.globalLogLen(),
-				Term:    rf.currentTerm,
-				Type:    LT_Noop,
-				Command: nil,
+				ExternalIndex: rf.log[len(rf.log)-1].ExternalIndex, // keep the same external index
+				InternalIndex: rf.globalLogLen(),
+				Term:          rf.currentTerm,
+				Type:          LT_Noop,
+				Command:       nil,
 			}
 			rf.log = append(rf.log, newLog)
 			rf.persist()
@@ -869,7 +848,7 @@ func (rf *Raft) applyEntries() {
 				msg := ApplyMsg{
 					CommandValid:  true,
 					Command:       rf.log[rf.localIndex(i)].Command,
-					CommandIndex:  rf.externalIndex(i),
+					CommandIndex:  rf.log[rf.localIndex(i)].ExternalIndex,
 					SnapshotValid: false,
 				}
 				rf.applyQueue.Enqueue(msg)
@@ -1008,7 +987,7 @@ func (rf *Raft) handleFailedReply(server int64, args *AppendEntriesArgs, reply *
 		snapshotArgs := InstallSnapshotArgs{
 			Term:                 rf.currentTerm,
 			LeaderId:             rf.me,
-			LastIncludedInternal: rf.log[0].Index,
+			LastIncludedInternal: rf.log[0].InternalIndex,
 			LastIncludedIndex:    rf.snapshotIndex,
 			LastIncludedTerm:     rf.log[0].Term,
 			Data:                 rf.snapshot,
@@ -1080,7 +1059,7 @@ func (rf *Raft) commitCheck(cancelToken *int32) {
 		if changed && (rf.localIndex(newCommitIndex) < 0 || // if an entry is in snapshot, should we think it is committed?
 			newCommitIndex < rf.globalLogLen() && rf.log[rf.localIndex(newCommitIndex)].Term == rf.currentTerm) {
 			if rf.commitIndex != newCommitIndex {
-				DPrintf("[%v] committed #%v (external #%v)", rf.me, newCommitIndex, rf.externalIndex(newCommitIndex))
+				DPrintf("[%v] committed #%v (external #%v)", rf.me, newCommitIndex, rf.log[rf.localIndex(newCommitIndex)].ExternalIndex)
 			}
 			rf.commitIndex = newCommitIndex
 		}
@@ -1148,10 +1127,10 @@ func Make(peers []*rpcwrapper.ClientEnd, me int64,
 	rf.votedFor = nil
 	rf.log = make([]logEntry, 0)
 	rf.log = append(rf.log, logEntry{
-		Index:   0,
-		Term:    1,
-		Type:    LT_Noop,
-		Command: nil, // no-op
+		InternalIndex: 0,
+		Term:          1,
+		Type:          LT_Noop,
+		Command:       nil, // no-op
 	})
 
 	// Volatile state on all servers
@@ -1192,7 +1171,7 @@ func Make(peers []*rpcwrapper.ClientEnd, me int64,
 				SnapshotTerm:  rf.snapshotTerm,
 				SnapshotIndex: rf.snapshotIndex,
 			})
-			rf.lastApplied = rf.log[0].Index
+			rf.lastApplied = rf.log[0].InternalIndex
 			DPrintf("[%v] rebuild state machine from snapshot", rf.me)
 		}
 
