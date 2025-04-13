@@ -875,6 +875,8 @@ func (rf *Raft) syncEntries(cancelToken *int32) {
 
 	// return immediately if cancelToken had been set during lock wating time
 	if atomic.LoadInt32(cancelToken) == 1 {
+		atomic.StoreInt32(cancelToken, 1)
+		DPrintf("[%v] cancel syncEntries because of death or not leader", rf.me)
 		return
 	}
 
@@ -1135,7 +1137,7 @@ func Make(peers []*rpcwrapper.ClientEnd, me int64,
 
 	// Volatile state on all servers
 	rf.commitIndex = 0
-	rf.lastApplied = 1 // consider that no-op entry is applied
+	rf.lastApplied = 0
 
 	rf.lastHeartBeat = time.Now()
 	rf.applyCh = applyCh
